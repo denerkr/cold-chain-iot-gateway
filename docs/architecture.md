@@ -79,12 +79,20 @@ visible/electrical data connection. The diagram now uses Wokwi's
 `wokwi-esp32-devkit-v1` board with `dht:SDA` connected to `esp:D15`; the `NC`
 pin is intentionally left open. The firmware now uses Wokwi's recommended
 ESP32 DHT library. A sensor-only simulation repeatedly read 5.00 C and 55.00%
-humidity. The latest full firmware run again received HTTP 503 during Wi-Fi
-association, although an earlier isolated network probe reached HiveMQ. The
-gateway path therefore succeeded in one test and failed in another; the cause
-remains unknown. Post-fix MQTT telemetry, alarms, dashboard updates, and
-abrupt-disconnect LWT remain unverified end to end. The HiveMQ-to-local-
-Mosquitto bridge separately forwarded a synthetic test message.
+humidity. An earlier full-firmware attempt received HTTP 503 during Wi-Fi association.
+In a later foreground run through Wokwi's Public Gateway, a local Mosquitto
+subscriber captured three Wokwi-originated telemetry packets (5.00 C, 55.00%
+humidity, door closed; uptimes 92, 102, and 112 seconds). Node-RED displayed
+5 C / 55% with the gateway online. After the simulation stopped, the retained
+status and dashboard showed offline. This verifies a short device-to-dashboard
+path; long-duration reliability and the exact LWT detection delay were not
+measured. The Wokwi Private Gateway was not used because the signed-in page
+showed an upgrade prompt when that option was selected.
+
+In a subsequent follow-up, three restart attempts remained at
+`Connecting to Wi-Fi` for approximately 10, 15, and 15 seconds and were stopped
+without additional telemetry. This does not identify the cause and means the
+short successful path was not repeatable in that session.
 
 ## Firmware call graph
 

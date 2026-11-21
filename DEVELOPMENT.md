@@ -57,10 +57,13 @@ This file records the design intent and development context needed to continue t
 - Kept the local Mosquitto listener loopback-only and Node-RED on the Compose network.
 - Assigned a project-specific device ID to reduce accidental collisions on the shared public broker.
 - Saved the public Wokwi project at `https://wokwi.com/projects/481333516199647233`.
-- Verified the HiveMQ-to-local-Mosquitto bridge with a synthetic test message. An earlier Wokwi Public Gateway attempt returned HTTP 503, but later standalone ESP32 tests joined Wi-Fi, obtained IP `10.10.0.2`, and connected by TCP to HiveMQ; the main firmware also connected to MQTT. Its DHT22 reads were invalid, so valid telemetry, dashboard updates, and LWT remain unverified. The earlier 503 was not reproduced and its cause is unknown.
+- Verified the HiveMQ-to-local-Mosquitto bridge with a synthetic test message. An earlier Wokwi Public Gateway attempt returned HTTP 503; the cause is unknown.
 - Added serial diagnostics for Wi-Fi/MQTT connection attempts and configured Wokwi's documented Wi-Fi channel 6 to skip scanning.
 - Added and ran a separate Wokwi network diagnostic sketch to distinguish virtual Wi-Fi association and outbound TCP reachability from MQTT and sensor behavior.
-- Fixed the DHT22 data connection: the prior `esp:15` endpoint did not render/connect the SDA pin. The diagram now uses Wokwi's documented `wokwi-esp32-devkit-v1` part with `D15`/`D27` endpoints and the ESP32-specific DHT library. A sensor-only test repeatedly reads 5.00 C and 55.00% humidity; full MQTT telemetry remains pending because the latest full simulation again received HTTP 503 during Wi-Fi association.
+- Fixed the DHT22 data connection: the prior `esp:15` endpoint did not render/connect the SDA pin. The diagram now uses Wokwi's documented `wokwi-esp32-devkit-v1` part with `D15`/`D27` endpoints and the ESP32-specific DHT library. A sensor-only test repeatedly reads 5.00 C and 55.00% humidity.
+- On 2026-11-21, a foreground Wokwi run using the Public Gateway connected to HiveMQ. A local Mosquitto subscriber captured three Wokwi-originated telemetry samples (5.00 C, 55.00% humidity, door closed; uptimes 92, 102, and 112 seconds), and the Node-RED dashboard displayed 5 C / 55% with the device online. After stopping the simulation, the retained status and dashboard showed offline; the exact LWT detection interval was not measured.
+- During a follow-up session, three restart attempts stayed at `Connecting to Wi-Fi` for approximately 10, 15, and 15 seconds. They were stopped before further testing; no new telemetry was observed, and the cause was not established. The final simulator state was stopped.
+- The signed-in Wokwi page displayed an upgrade prompt when **Enable Private Gateway** was selected, despite the user's report that Pro had been activated. The Private Gateway was therefore not used; the successful run used the existing public-broker bridge.
 
 ## Suggested maintenance workflow
 

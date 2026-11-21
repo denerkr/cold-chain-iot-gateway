@@ -27,12 +27,27 @@ connection in Wokwi. The diagram now uses the documented
 `DHT sensor library for ESPx` is also in use. A sensor-only simulation now
 reports `status=OK`, `temperature_c=5.00`, and `humidity_pct=55.00` repeatedly.
 
-The latest full firmware run again received HTTP 503 during Wi-Fi association.
-An earlier isolated run reached HiveMQ, so the gateway path has worked in one
-test but failed in another; its cause is unknown. Valid MQTT telemetry after
-the wiring fix, dashboard updates, alarms, and LWT remain unverified end to
-end. The HiveMQ-to-Mosquitto bridge was separately verified using a synthetic
-message.
+An earlier full-firmware attempt received HTTP 503 during Wi-Fi association.
+In a later run, while the Wokwi project remained in the foreground, the
+firmware connected to HiveMQ and a local Mosquitto subscriber captured three
+Wokwi-originated telemetry messages: 5.00 C, 55.00% humidity, door closed, at
+uptimes 92, 102, and 112 seconds. Node-RED displayed the 5 C / 55% readings
+with the gateway online. After the simulation was stopped, the retained
+status and dashboard showed offline. The exact Last Will detection delay was
+not measured, and the successful short run does not establish long-duration
+reliability.
+
+The optional Wokwi Private Gateway was not used for this verification. Although
+the user reported activating Pro, selecting **Enable Private Gateway** in the
+signed-in Wokwi page opened an upgrade prompt. The verified demonstration
+therefore used the existing Public Gateway -> HiveMQ -> Mosquitto bridge route.
+The HiveMQ bridge and Node-RED alarm rules were also tested independently with
+explicitly synthetic messages; those tests are not Wokwi-originated telemetry.
+
+In a follow-up session, three restart attempts remained at
+`Connecting to Wi-Fi` for approximately 10, 15, and 15 seconds. They were
+stopped without new telemetry, and the cause remains undetermined. The last
+simulation was left stopped.
 
 For a reproducible isolation test that checks Wi-Fi association and outbound
 TCP to HiveMQ without `PubSubClient`, use the separate
