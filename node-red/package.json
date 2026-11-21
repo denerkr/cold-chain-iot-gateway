@@ -1,0 +1,9 @@
+{
+  "name": "cold-chain-node-red",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dashboard e regras de supervisao da cadeia de frio",
+  "dependencies": {
+    "node-red-dashboard": "3.6.5"
+  }
+}

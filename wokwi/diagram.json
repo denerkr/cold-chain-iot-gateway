@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "author": "Dener Kraus e Henrique Bueno de Morais",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-v1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-dht22", "id": "dht", "top": -76.8, "left": 172.8, "attrs": { "temperature": "5", "humidity": "55" } },
+    { "type": "wokwi-pushbutton", "id": "door", "top": 96, "left": 182.4, "attrs": { "color": "green", "label": "Porta", "key": "D" } }
+  ],
+  "connections": [
+    [ "esp:TX0", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX0", "$serialMonitor:TX", "", [] ],
+    [ "dht:VCC", "esp:3V3", "red", [ "v0" ] ],
+    [ "dht:GND", "esp:GND.1", "black", [ "v0" ] ],
+    [ "dht:SDA", "esp:15", "green", [ "v0" ] ],
+    [ "door:1.l", "esp:GND.2", "black", [ "h0" ] ],
+    [ "door:2.l", "esp:27", "green", [ "h0" ] ]
+  ],
+  "dependencies": {}
+}

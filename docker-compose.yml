@@ -1,0 +1,25 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    restart: unless-stopped
+
+  node-red:
+    image: nodered/node-red:4.0
+    depends_on:
+      - mosquitto
+    ports:
+      - "127.0.0.1:1880:1880"
+    volumes:
+      - ./node-red:/data
+    environment:
+      - TZ=America/Sao_Paulo
+      - FLOWS=flows.json
+    restart: unless-stopped
+
+volumes:
+  mosquitto-data:

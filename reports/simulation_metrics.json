@@ -1,0 +1,17 @@
+{
+  "simulation": "synthetic; not measured on physical hardware",
+  "seed": 410103,
+  "simulation_duration_s": 3600,
+  "telemetry_period_s": 10,
+  "disconnect_at_s": 3000,
+  "mqtt_keepalive_s": 30,
+  "lwt_detection_latency_s": 45.0,
+  "generated_messages": 300,
+  "received_messages": 298,
+  "delivery_ratio_pct": 99.33,
+  "network_latency_mean_ms": 78.29,
+  "network_latency_p95_ms": 118.71,
+  "alarm_count": 2,
+  "temperature_excursions": 1,
+  "door_open_alarms": 1
+}

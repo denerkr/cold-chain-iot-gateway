@@ -1,0 +1,26 @@
+[
+  {
+    "timestamp_s": 120.03732822172451,
+    "type": "temperature_excursion",
+    "latency_ms": 37.33,
+    "value": 9.49
+  },
+  {
+    "timestamp_s": 230.0961499186542,
+    "type": "door_open_too_long",
+    "latency_ms": 96.15,
+    "duration_s": 30
+  },
+  {
+    "timestamp_s": 300.04755878257583,
+    "type": "temperature_restored",
+    "latency_ms": 47.56,
+    "value": 4.96
+  },
+  {
+    "timestamp_s": 3045.0,
+    "type": "lwt_offline",
+    "latency_ms": null,
+    "details": "Broker detects an abrupt disconnect after 1.5x keep-alive"
+  }
+]
