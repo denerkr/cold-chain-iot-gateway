@@ -1,0 +1,22 @@
+{
+  "simulation": "theoretical MQTT estimate; not broker-measured",
+  "assumption": "LWT detection is estimated as 1.5 times the configured keep-alive.",
+  "scenarios": [
+    {
+      "mqtt_keepalive_s": 10,
+      "estimated_lwt_detection_latency_s": 15.0
+    },
+    {
+      "mqtt_keepalive_s": 20,
+      "estimated_lwt_detection_latency_s": 30.0
+    },
+    {
+      "mqtt_keepalive_s": 30,
+      "estimated_lwt_detection_latency_s": 45.0
+    },
+    {
+      "mqtt_keepalive_s": 60,
+      "estimated_lwt_detection_latency_s": 90.0
+    }
+  ]
+}

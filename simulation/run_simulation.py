@@ -8,7 +8,6 @@ import csv
 import json
 import math
 import random
-import tempfile
 from pathlib import Path
 from statistics import mean, stdev
 
@@ -23,8 +22,14 @@ SIMULATION_DURATION_S = 3600
 DEVICE_DISCONNECT_S = 3000
 MQTT_KEEPALIVE_S = 30
 NETWORK_DROP_RATE = 0.01
+NETWORK_DROP_RATES = (0.0, 0.01, 0.05, 0.10)
+MQTT_KEEPALIVE_SCENARIOS_S = (10, 20, 30, 60)
 TEMPERATURE_MIN_C = 2.0
 TEMPERATURE_MAX_C = 8.0
+TEMPERATURE_EXCURSION_START_S = 120
+TEMPERATURE_EXCURSION_END_S = 290
+DOOR_OPEN_START_S = 200
+DOOR_OPEN_END_S = 260
 DOOR_ALARM_AFTER_S = 30
 
 
@@ -36,10 +41,94 @@ def percentile(values: list[float], quantile: float) -> float:
     return ordered[max(0, math.ceil(quantile * len(ordered)) - 1)]
 
 
-def run_simulation(output_dir: Path, seed: int = 410103) -> dict[str, object]:
+def _event_timestamp(events: list[dict[str, object]], event_type: str) -> float | None:
+    """Return the first timestamp for an event type, if it was observed."""
+    for event in events:
+        if event["type"] == event_type:
+            timestamp = event["timestamp_s"]
+            return float(timestamp) if isinstance(timestamp, (int, float)) else None
+    return None
+
+
+def _temperature_excursion_degree_minutes(
+    records: list[dict[str, object]],
+) -> float | None:
+    """Estimate observed thermal exposure over contiguous samples in the excursion."""
+    exposure = 0.0
+    observed_intervals = 0
+    for previous, current in zip(records, records[1:]):
+        previous_time = float(previous["timestamp_s"])
+        current_time = float(current["timestamp_s"])
+        interval_s = current_time - previous_time
+        if (
+            interval_s != SAMPLE_PERIOD_S
+            or current_time <= TEMPERATURE_EXCURSION_START_S
+            or previous_time >= TEMPERATURE_EXCURSION_END_S
+        ):
+            continue
+
+        previous_temperature = float(previous["temperature_c"])
+        current_temperature = float(current["temperature_c"])
+        previous_excess = max(0.0, previous_temperature - TEMPERATURE_MAX_C) + max(
+            0.0, TEMPERATURE_MIN_C - previous_temperature
+        )
+        current_excess = max(0.0, current_temperature - TEMPERATURE_MAX_C) + max(
+            0.0, TEMPERATURE_MIN_C - current_temperature
+        )
+        exposure += (previous_excess + current_excess) / 2 * interval_s / 60
+        observed_intervals += 1
+
+    return round(exposure, 4) if observed_intervals else None
+
+
+def _aggregate_metric(values: list[object]) -> dict[str, object]:
+    """Summarize numeric trial values while retaining missing detections as nulls."""
+    numeric_values: list[float] = []
+    formatted_values: list[float | None] = []
+    for value in values:
+        if value is None:
+            formatted_values.append(None)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            numeric = float(value)
+            numeric_values.append(numeric)
+            formatted_values.append(round(numeric, 4))
+        else:
+            raise TypeError(f"Expected a numeric metric or None, got {type(value).__name__}")
+
+    average = mean(numeric_values) if numeric_values else None
+    standard_deviation = stdev(numeric_values) if len(numeric_values) > 1 else None
+    interval = None
+    if average is not None and standard_deviation is not None:
+        margin = 1.96 * standard_deviation / math.sqrt(len(numeric_values))
+        interval = [
+            round(max(0.0, average - margin), 4),
+            round(average + margin, 4),
+        ]
+
+    return {
+        "mean": round(average, 4) if average is not None else None,
+        "values": formatted_values,
+        "observed_run_count": len(numeric_values),
+        "sample_standard_deviation": (
+            round(standard_deviation, 4)
+            if standard_deviation is not None
+            else None
+        ),
+        "approximate_95_percent_confidence_interval": interval,
+    }
+
+
+def run_simulation(
+    output_dir: Path,
+    seed: int = 410103,
+    network_drop_rate: float = NETWORK_DROP_RATE,
+    write_reports: bool = True,
+) -> dict[str, object]:
     """Run one synthetic trial and write its telemetry, events, metrics, and charts."""
+    if not 0 <= network_drop_rate < 1:
+        raise ValueError("network_drop_rate must be at least 0 and less than 1")
+
     rng = random.Random(seed)
-    output_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, object]] = []
     events: list[dict[str, object]] = []
     network_latencies_ms: list[float] = []
@@ -51,14 +140,14 @@ def run_simulation(output_dir: Path, seed: int = 410103) -> dict[str, object]:
 
     for sample_index in range(generated_messages):
         timestamp_s = sample_index * SAMPLE_PERIOD_S
-        if rng.random() < NETWORK_DROP_RATE:
+        if rng.random() < network_drop_rate:
             continue
 
         temperature_c = 4.8 + rng.gauss(0, 0.35)
-        if 120 <= timestamp_s < 290:
+        if TEMPERATURE_EXCURSION_START_S <= timestamp_s < TEMPERATURE_EXCURSION_END_S:
             temperature_c = 9.2 + rng.gauss(0, 0.2)
         humidity_pct = min(75.0, max(30.0, 55 + rng.gauss(0, 2.0)))
-        door_open = 200 <= timestamp_s < 260
+        door_open = DOOR_OPEN_START_S <= timestamp_s < DOOR_OPEN_END_S
         latency_ms = rng.uniform(35, 120)
         received_messages += 1
         network_latencies_ms.append(latency_ms)
@@ -127,9 +216,25 @@ def run_simulation(output_dir: Path, seed: int = 410103) -> dict[str, object]:
     )
 
     latencies = network_latencies_ms
+    temperature_alarm_time = _event_timestamp(events, "temperature_excursion")
+    door_alarm_time = _event_timestamp(events, "door_open_too_long")
+    excursion_sample_count = len(
+        range(
+            TEMPERATURE_EXCURSION_START_S,
+            TEMPERATURE_EXCURSION_END_S,
+            SAMPLE_PERIOD_S,
+        )
+    )
+    received_excursion_samples = sum(
+        TEMPERATURE_EXCURSION_START_S
+        <= int(record["timestamp_s"])
+        < TEMPERATURE_EXCURSION_END_S
+        for record in records
+    )
     metrics: dict[str, object] = {
         "simulation": "synthetic; not measured on physical hardware",
         "seed": seed,
+        "network_drop_rate_pct": round(network_drop_rate * 100, 2),
         "simulation_duration_s": SIMULATION_DURATION_S,
         "telemetry_period_s": SAMPLE_PERIOD_S,
         "disconnect_at_s": DEVICE_DISCONNECT_S,
@@ -138,8 +243,10 @@ def run_simulation(output_dir: Path, seed: int = 410103) -> dict[str, object]:
         "generated_messages": generated_messages,
         "received_messages": received_messages,
         "delivery_ratio_pct": round(received_messages / generated_messages * 100, 2),
-        "network_latency_mean_ms": round(mean(latencies), 2),
-        "network_latency_p95_ms": round(percentile(latencies, 0.95), 2),
+        "network_latency_mean_ms": round(mean(latencies), 2) if latencies else None,
+        "network_latency_p95_ms": (
+            round(percentile(latencies, 0.95), 2) if latencies else None
+        ),
         "alarm_count": sum(
             event["type"] in ("temperature_excursion", "door_open_too_long")
             for event in events
@@ -150,28 +257,87 @@ def run_simulation(output_dir: Path, seed: int = 410103) -> dict[str, object]:
         "door_open_alarms": sum(
             event["type"] == "door_open_too_long" for event in events
         ),
+        "observed_temperature_compliance_pct": (
+            round(
+                sum(
+                    TEMPERATURE_MIN_C
+                    <= float(record["temperature_c"])
+                    <= TEMPERATURE_MAX_C
+                    for record in records
+                )
+                / len(records)
+                * 100,
+                2,
+            )
+            if records
+            else None
+        ),
+        "temperature_excursion_degree_minutes": (
+            _temperature_excursion_degree_minutes(records)
+        ),
+        "temperature_alarm_detected_pct": (
+            100.0 if temperature_alarm_time is not None else 0.0
+        ),
+        "temperature_alarm_detection_delay_s": (
+            round(temperature_alarm_time - TEMPERATURE_EXCURSION_START_S, 2)
+            if temperature_alarm_time is not None
+            else None
+        ),
+        "door_alarm_detected_pct": 100.0 if door_alarm_time is not None else 0.0,
+        "door_alarm_time_from_open_s": (
+            round(door_alarm_time - DOOR_OPEN_START_S, 2)
+            if door_alarm_time is not None
+            else None
+        ),
+        "door_alarm_delay_after_threshold_s": (
+            round(
+                door_alarm_time
+                - DOOR_OPEN_START_S
+                - DOOR_ALARM_AFTER_S,
+                2,
+            )
+            if door_alarm_time is not None
+            else None
+        ),
+        "excursion_window_delivery_pct": round(
+            received_excursion_samples / excursion_sample_count * 100, 2
+        ),
     }
 
-    csv_path = output_dir / "telemetry.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=list(records[0]))
-        writer.writeheader()
-        writer.writerows(records)
+    if write_reports:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = output_dir / "telemetry.csv"
+        with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=[
+                    "timestamp_s",
+                    "temperature_c",
+                    "humidity_pct",
+                    "door_open",
+                    "mqtt_latency_ms",
+                ],
+            )
+            writer.writeheader()
+            writer.writerows(records)
 
-    (output_dir / "events.json").write_text(
-        json.dumps(events, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    (output_dir / "simulation_metrics.json").write_text(
-        json.dumps(metrics, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    _write_performance_chart(output_dir / "performance_overview.png", records, events)
-    _write_system_performance_chart(
-        output_dir / "system_performance.png",
-        records,
-        generated_messages,
-        received_messages,
-        lwt_detection_latency_s,
-    )
+        (output_dir / "events.json").write_text(
+            json.dumps(events, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        (output_dir / "simulation_metrics.json").write_text(
+            json.dumps(metrics, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        _write_performance_chart(
+            output_dir / "performance_overview.png", records, events
+        )
+        _write_system_performance_chart(
+            output_dir / "system_performance.png",
+            records,
+            generated_messages,
+            received_messages,
+            lwt_detection_latency_s,
+        )
     return metrics
 
 
@@ -254,7 +420,7 @@ def _write_system_performance_chart(
     """Plot latency, message delivery, and estimated MQTT last-will detection."""
     times = [float(row["timestamp_s"]) / 60 for row in records]
     latencies = [float(row["mqtt_latency_ms"]) for row in records]
-    latency_mean = mean(latencies)
+    latency_mean = mean(latencies) if latencies else 0.0
     latency_p95 = percentile(latencies, 0.95)
     lost_messages = generated_messages - received_messages
 
@@ -302,7 +468,10 @@ def _write_system_performance_chart(
 
 
 def run_experiment(
-    output_dir: Path, base_seed: int = 410103, runs: int = 1
+    output_dir: Path,
+    base_seed: int = 410103,
+    runs: int = 1,
+    network_drop_rate: float = NETWORK_DROP_RATE,
 ) -> dict[str, object]:
     """Run sequential independent seeds and report means, spread, and approximate intervals."""
     if runs < 1:
@@ -310,16 +479,15 @@ def run_experiment(
 
     seed_values = [base_seed + run_index for run_index in range(runs)]
     trial_metrics: list[dict[str, object]] = []
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     for run_index, seed in enumerate(seed_values):
-        if run_index == 0:
-            trial_metrics.append(run_simulation(output_dir, seed=seed))
-            continue
-
-        # Keep additional trial artifacts temporary; preserve the first trial as a detailed example.
-        with tempfile.TemporaryDirectory(prefix="cold-chain-seed-") as temporary_directory:
-            trial_metrics.append(run_simulation(Path(temporary_directory), seed=seed))
+        trial_metrics.append(
+            run_simulation(
+                output_dir,
+                seed=seed,
+                network_drop_rate=network_drop_rate,
+                write_reports=run_index == 0,
+            )
+        )
 
     metric_names = (
         "delivery_ratio_pct",
@@ -328,36 +496,31 @@ def run_experiment(
         "alarm_count",
         "temperature_excursions",
         "door_open_alarms",
+        "observed_temperature_compliance_pct",
+        "temperature_excursion_degree_minutes",
+        "temperature_alarm_detected_pct",
+        "temperature_alarm_detection_delay_s",
+        "door_alarm_detected_pct",
+        "door_alarm_time_from_open_s",
+        "door_alarm_delay_after_threshold_s",
+        "excursion_window_delivery_pct",
     )
     aggregated_metrics: dict[str, dict[str, object]] = {}
     for metric_name in metric_names:
-        values = [float(metrics[metric_name]) for metrics in trial_metrics]
-        average = mean(values)
-        standard_deviation = stdev(values) if runs > 1 else None
-        interval = None
-        if standard_deviation is not None:
-            # This normal-approximation interval is descriptive, especially for small run counts.
-            margin = 1.96 * standard_deviation / math.sqrt(runs)
-            interval = [round(average - margin, 4), round(average + margin, 4)]
-        aggregated_metrics[metric_name] = {
-            "mean": round(average, 4),
-            "values": [round(value, 4) for value in values],
-            "sample_standard_deviation": (
-                round(standard_deviation, 4)
-                if standard_deviation is not None
-                else None
-            ),
-            "approximate_95_percent_confidence_interval": interval,
-        }
+        aggregated_metrics[metric_name] = _aggregate_metric(
+            [metrics[metric_name] for metrics in trial_metrics]
+        )
 
     summary: dict[str, object] = {
         "simulation": "synthetic; not measured on physical hardware",
         "base_seed": base_seed,
         "run_count": runs,
+        "network_drop_rate_pct": round(network_drop_rate * 100, 2),
         "seed_values": seed_values,
         "confidence_interval_method": (
             "Normal approximation: mean +/- 1.96 * sample standard deviation / sqrt(n); "
-            "descriptive only, especially for small samples."
+            "computed from available detections and descriptive only, especially for small "
+            "samples."
             if runs > 1
             else "Not estimated for a single run."
         ),
@@ -368,6 +531,9 @@ def run_experiment(
     )
     _write_seed_sweep_chart(
         output_dir / "seed_sweep_performance.png", trial_metrics, runs
+    )
+    _write_alarm_response_chart(
+        output_dir / "alarm_response_analysis.png", trial_metrics, runs
     )
     return summary
 
@@ -383,15 +549,361 @@ def _write_seed_sweep_chart(
     )
     figure, axes = plt.subplots(3, 1, figsize=(10, 9), constrained_layout=True)
     for axis, (metric_name, title, color) in zip(axes, series):
-        values = [float(metrics[metric_name]) for metrics in trial_metrics]
-        axis.hist(values, bins=min(20, max(1, runs)), color=color, alpha=0.8)
-        axis.axvline(mean(values), color="#212121", linestyle="--", label=f"Mean: {mean(values):.2f}")
+        values = [
+            float(metrics[metric_name])
+            for metrics in trial_metrics
+            if isinstance(metrics[metric_name], (int, float))
+        ]
+        if values:
+            axis.hist(values, bins=min(20, max(1, runs)), color=color, alpha=0.8)
+            average = mean(values)
+            standard_deviation = stdev(values) if len(values) > 1 else None
+            if standard_deviation is not None:
+                margin = 1.96 * standard_deviation / math.sqrt(len(values))
+                axis.axvspan(
+                    average - margin,
+                    average + margin,
+                    color="#212121",
+                    alpha=0.12,
+                    label="Approx. 95% CI for mean",
+                )
+            axis.axvline(
+                average,
+                color="#212121",
+                linestyle="--",
+                label=f"Mean across seeds: {average:.2f}",
+            )
+        else:
+            axis.text(0.5, 0.5, "No observations", ha="center", va="center")
         axis.set_title(title)
-        axis.set_xlabel("Metric value across independent seeds")
-        axis.set_ylabel("Run count")
+        axis.set_xlabel("One per-trial metric value per seed")
+        axis.set_ylabel("Number of seeds")
         axis.legend(loc="upper right")
         axis.grid(axis="y", alpha=0.25)
     figure.suptitle(f"Monte Carlo seed sweep (n={runs})")
+    figure.savefig(output_path, dpi=160)
+    plt.close(figure)
+
+
+def _write_alarm_response_chart(
+    output_path: Path, trial_metrics: list[dict[str, object]], runs: int
+) -> None:
+    """Plot thermal exposure and alarm response delays across seed trials."""
+    series = (
+        (
+            "temperature_alarm_detection_delay_s",
+            "Temperature alarm: delay after excursion starts",
+            "Delay (s)",
+            "#c62828",
+        ),
+        (
+            "door_alarm_delay_after_threshold_s",
+            "Door alarm: delay after 30-second limit",
+            "Additional delay (s)",
+            "#ef6c00",
+        ),
+        (
+            "temperature_excursion_degree_minutes",
+            "Observed thermal exposure during the excursion",
+            "Degree-minutes (C min)",
+            "#1565c0",
+        ),
+    )
+    figure, axes = plt.subplots(3, 1, figsize=(10, 9), constrained_layout=True)
+    for axis, (metric_name, title, x_label, color) in zip(axes, series):
+        values = [
+            float(metrics[metric_name])
+            for metrics in trial_metrics
+            if isinstance(metrics[metric_name], (int, float))
+        ]
+        if values:
+            axis.hist(
+                values,
+                bins=min(20, max(1, len(values))),
+                color=color,
+                alpha=0.8,
+            )
+            axis.axvline(
+                mean(values),
+                color="#212121",
+                linestyle="--",
+                label=f"Mean: {mean(values):.2f}",
+            )
+            axis.legend(loc="upper right")
+        else:
+            axis.text(0.5, 0.5, "No observations", ha="center", va="center")
+        axis.set_title(title)
+        axis.set_xlabel(x_label)
+        axis.set_ylabel("Number of seeds")
+        axis.grid(axis="y", alpha=0.25)
+
+    figure.suptitle(
+        f"Operational alarm and thermal metrics (n={runs}); LWT estimate: "
+        f"{MQTT_KEEPALIVE_S * 1.5:.0f} s"
+    )
+    figure.savefig(output_path, dpi=160)
+    plt.close(figure)
+
+
+def run_sensitivity_analysis(
+    output_dir: Path,
+    base_seed: int = 410103,
+    runs: int = 100,
+    drop_rates: tuple[float, ...] = NETWORK_DROP_RATES,
+    keepalive_values_s: tuple[int, ...] = MQTT_KEEPALIVE_SCENARIOS_S,
+) -> dict[str, object]:
+    """Compare packet-loss scenarios and theoretical MQTT LWT keep-alive delays."""
+    if runs < 1:
+        raise ValueError("runs must be at least 1")
+    if not drop_rates:
+        raise ValueError("drop_rates must contain at least one scenario")
+    if not keepalive_values_s or any(value < 1 for value in keepalive_values_s):
+        raise ValueError("keepalive_values_s must contain positive values")
+    if any(not 0 <= rate < 1 for rate in drop_rates):
+        raise ValueError("drop rates must be at least 0 and less than 1")
+
+    seed_values = [base_seed + run_index for run_index in range(runs)]
+    metric_names = (
+        "delivery_ratio_pct",
+        "excursion_window_delivery_pct",
+        "temperature_alarm_detected_pct",
+        "temperature_alarm_detection_delay_s",
+        "door_alarm_detected_pct",
+        "door_alarm_delay_after_threshold_s",
+    )
+    network_scenarios: list[dict[str, object]] = []
+    for drop_rate in drop_rates:
+        scenario_trials = [
+            run_simulation(
+                output_dir,
+                seed=seed,
+                network_drop_rate=drop_rate,
+                write_reports=False,
+            )
+            for seed in seed_values
+        ]
+        network_scenarios.append(
+            {
+                "network_drop_rate_pct": round(drop_rate * 100, 2),
+                "metrics": {
+                    metric_name: _aggregate_metric(
+                        [trial[metric_name] for trial in scenario_trials]
+                    )
+                    for metric_name in metric_names
+                },
+            }
+        )
+
+    network_summary: dict[str, object] = {
+        "simulation": "synthetic; not measured on physical hardware",
+        "base_seed": base_seed,
+        "run_count_per_scenario": runs,
+        "seed_values": seed_values,
+        "seed_method": (
+            "The same seed sequence is reused for each scenario; changing drop probability "
+            "can alter later random draws within a trial."
+        ),
+        "confidence_interval_method": (
+            "Normal approximation based on the sample standard deviation; descriptive only."
+            if runs > 1
+            else "Not estimated for a single run."
+        ),
+        "scenarios": network_scenarios,
+    }
+
+    keepalive_scenarios = [
+        {
+            "mqtt_keepalive_s": keepalive_s,
+            "estimated_lwt_detection_latency_s": round(keepalive_s * 1.5, 2),
+        }
+        for keepalive_s in keepalive_values_s
+    ]
+    lwt_summary: dict[str, object] = {
+        "simulation": "theoretical MQTT estimate; not broker-measured",
+        "assumption": "LWT detection is estimated as 1.5 times the configured keep-alive.",
+        "scenarios": keepalive_scenarios,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "network_sensitivity_metrics.json").write_text(
+        json.dumps(network_summary, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "lwt_keepalive_sensitivity.json").write_text(
+        json.dumps(lwt_summary, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+    _write_network_sensitivity_chart(
+        output_dir / "network_loss_sensitivity.png", network_scenarios
+    )
+    _write_keepalive_sensitivity_chart(
+        output_dir / "lwt_keepalive_sensitivity.png", keepalive_scenarios
+    )
+    return {"network_loss": network_summary, "lwt_keepalive": lwt_summary}
+
+
+def _write_network_sensitivity_chart(
+    output_path: Path, scenarios: list[dict[str, object]]
+) -> None:
+    """Plot delivery and alarm-response changes across packet-loss scenarios."""
+    drop_rates = [
+        float(scenario["network_drop_rate_pct"]) for scenario in scenarios
+    ]
+    figure, axes = plt.subplots(3, 1, figsize=(10, 10), constrained_layout=True)
+    delivery_series = (
+        (
+            axes[0],
+            "delivery_ratio_pct",
+            "Overall telemetry delivery",
+            "Received messages (%)",
+            "#2e7d32",
+        ),
+        (
+            axes[1],
+            "excursion_window_delivery_pct",
+            "Telemetry delivery during the temperature excursion",
+            "Received excursion samples (%)",
+            "#1565c0",
+        ),
+    )
+    for axis, metric_name, title, y_label, color in delivery_series:
+        values: list[float] = []
+        lower_errors: list[float] = []
+        upper_errors: list[float] = []
+        valid_drop_rates: list[float] = []
+        for drop_rate, scenario in zip(drop_rates, scenarios):
+            scenario_metrics = scenario["metrics"]
+            if not isinstance(scenario_metrics, dict):
+                continue
+            summary = scenario_metrics[metric_name]
+            if not isinstance(summary, dict) or not isinstance(
+                summary.get("mean"), (int, float)
+            ):
+                continue
+            average = float(summary["mean"])
+            interval = summary["approximate_95_percent_confidence_interval"]
+            values.append(average)
+            valid_drop_rates.append(drop_rate)
+            if (
+                isinstance(interval, list)
+                and len(interval) == 2
+                and isinstance(interval[0], (int, float))
+                and isinstance(interval[1], (int, float))
+            ):
+                lower_errors.append(max(0.0, average - float(interval[0])))
+                upper_errors.append(max(0.0, float(interval[1]) - average))
+            else:
+                lower_errors.append(0.0)
+                upper_errors.append(0.0)
+
+        if values:
+            axis.errorbar(
+                valid_drop_rates,
+                values,
+                yerr=[lower_errors, upper_errors],
+                marker="o",
+                capsize=4,
+                color=color,
+            )
+        axis.set_title(title)
+        axis.set_ylabel(y_label)
+        axis.grid(alpha=0.25)
+
+    axis = axes[2]
+    delay_series = (
+        (
+            "temperature_alarm_detection_delay_s",
+            "Temperature alarm delay",
+            "#c62828",
+        ),
+        (
+            "door_alarm_delay_after_threshold_s",
+            "Door alarm delay after limit",
+            "#ef6c00",
+        ),
+    )
+    for metric_name, label, color in delay_series:
+        values = []
+        lower_errors = []
+        upper_errors = []
+        valid_drop_rates = []
+        for drop_rate, scenario in zip(drop_rates, scenarios):
+            scenario_metrics = scenario["metrics"]
+            if not isinstance(scenario_metrics, dict):
+                continue
+            summary = scenario_metrics[metric_name]
+            if not isinstance(summary, dict) or not isinstance(
+                summary.get("mean"), (int, float)
+            ):
+                continue
+            average = float(summary["mean"])
+            interval = summary["approximate_95_percent_confidence_interval"]
+            values.append(average)
+            valid_drop_rates.append(drop_rate)
+            if (
+                isinstance(interval, list)
+                and len(interval) == 2
+                and isinstance(interval[0], (int, float))
+                and isinstance(interval[1], (int, float))
+            ):
+                lower_errors.append(max(0.0, average - float(interval[0])))
+                upper_errors.append(max(0.0, float(interval[1]) - average))
+            else:
+                lower_errors.append(0.0)
+                upper_errors.append(0.0)
+        if values:
+            axis.errorbar(
+                valid_drop_rates,
+                values,
+                yerr=[lower_errors, upper_errors],
+                marker="o",
+                capsize=4,
+                label=label,
+                color=color,
+            )
+    axis.set_title("Alarm response as packet loss increases")
+    axis.set_xlabel("Configured message-drop probability (%)")
+    axis.set_ylabel("Delay (s)")
+    axis.legend(loc="upper left")
+    axis.grid(alpha=0.25)
+    figure.suptitle(
+        "Synthetic network-loss sensitivity; error bars are approximate 95% CIs"
+    )
+    figure.savefig(output_path, dpi=160)
+    plt.close(figure)
+
+
+def _write_keepalive_sensitivity_chart(
+    output_path: Path, scenarios: list[dict[str, object]]
+) -> None:
+    """Plot estimated LWT detection time as a function of MQTT keep-alive."""
+    keepalives = [int(scenario["mqtt_keepalive_s"]) for scenario in scenarios]
+    detection_delays = [
+        float(scenario["estimated_lwt_detection_latency_s"])
+        for scenario in scenarios
+    ]
+    figure, axis = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    axis.plot(keepalives, detection_delays, marker="o", color="#ef6c00")
+    axis.scatter(
+        [MQTT_KEEPALIVE_S],
+        [MQTT_KEEPALIVE_S * 1.5],
+        color="#c62828",
+        zorder=3,
+        label=f"Project setting: {MQTT_KEEPALIVE_S} s → "
+        f"{MQTT_KEEPALIVE_S * 1.5:.0f} s estimate",
+    )
+    axis.set_title("Theoretical MQTT Last Will detection estimate")
+    axis.set_xlabel("Configured MQTT keep-alive (s)")
+    axis.set_ylabel("Estimated offline detection time (s)")
+    axis.text(
+        0.03,
+        0.95,
+        "Estimate = 1.5 x keep-alive; actual broker timing may differ.",
+        transform=axis.transAxes,
+        va="top",
+    )
+    axis.legend(loc="lower right")
+    axis.grid(alpha=0.25)
     figure.savefig(output_path, dpi=160)
     plt.close(figure)
 
@@ -417,10 +929,34 @@ def main() -> None:
         default=1,
         help="Number of independent sequential seeds (default: 1)",
     )
+    parser.add_argument(
+        "--drop-rate",
+        type=float,
+        default=NETWORK_DROP_RATE,
+        help="Per-message drop probability from 0 to less than 1 (default: 0.01)",
+    )
+    parser.add_argument(
+        "--sensitivity-analysis",
+        action="store_true",
+        help="Also compare packet-loss and MQTT keep-alive scenarios",
+    )
     args = parser.parse_args()
     if args.runs < 1:
         parser.error("--runs must be at least 1")
-    summary = run_experiment(args.output_dir, base_seed=args.seed, runs=args.runs)
+    if not 0 <= args.drop_rate < 1:
+        parser.error("--drop-rate must be at least 0 and less than 1")
+    summary = run_experiment(
+        args.output_dir,
+        base_seed=args.seed,
+        runs=args.runs,
+        network_drop_rate=args.drop_rate,
+    )
+    if args.sensitivity_analysis:
+        summary["sensitivity_analysis"] = run_sensitivity_analysis(
+            args.output_dir,
+            base_seed=args.seed,
+            runs=args.runs,
+        )
     print(json.dumps(summary, indent=2, ensure_ascii=True))
 
 

@@ -82,13 +82,22 @@ Run multiple independent trials with sequential seeds, for example 100 replicati
 python -m simulation.run_simulation --seed 410103 --runs 100
 ```
 
-`--runs` is the number of independent pseudorandom trials; trial `i` uses seed `--seed + i`. More runs generally give a more stable estimate of variability, at the cost of more computation. The reported 95% intervals are normal approximations based on the sample standard deviation; they are descriptive and may be imprecise with small sample counts. A single run reports no confidence interval. Results can differ if the model or its constants change, even when the seed is unchanged.
+`--runs` is the number of independent pseudorandom trials; trial `i` uses seed `--seed + i`. More runs generally give a more stable estimate of variability, at the cost of more computation. The reported 95% intervals are normal approximations based on the sample standard deviation; they are descriptive and may be imprecise with small sample counts. Since these metrics are non-negative, a negative lower endpoint is clipped to zero. A single run reports no confidence interval. Results can differ if the model or its constants change, even when the seed is unchanged.
+
+Run the additional packet-loss and MQTT keep-alive analyses with:
+
+```powershell
+python -m simulation.run_simulation --seed 410103 --runs 100 --sensitivity-analysis
+```
+
+The sensitivity run compares message-drop probabilities of 0%, 1%, 5%, and 10%, plus theoretical Last Will delays for 10-, 20-, 30-, and 60-second keep-alives. Use `--drop-rate 0.05` to change the regular seed sweep's modeled drop probability; this does not change the fixed sensitivity scenarios.
 
 Available options:
 
 ```powershell
 python -m simulation.run_simulation --help
 python -m simulation.run_simulation --seed 123 --runs 25 --output-dir reports
+python -m simulation.run_simulation --seed 123 --runs 25 --drop-rate 0.05
 ```
 
 The simulator advances one synthetic hour without waiting an hour in real time. It models telemetry until a device disconnects at 3,000 simulated seconds, a 1% message-drop probability, network latency, a thermal excursion, an open door, and estimated LWT detection. These are modeled conditions, not measurements from a real MQTT broker.
@@ -102,12 +111,25 @@ The output directory contains:
 | `simulation_metrics.json` | First-trial delivery, latency, and alarm metrics |
 | `performance_overview.png` | Temperature, compliance band, door-open periods, MQTT latency, alarms, and disconnect time |
 | `system_performance.png` | First-trial latency, delivery, and LWT estimates |
-| `seed_sweep_metrics.json` | Per-metric means, per-seed values, sample deviations, and approximate intervals |
-| `seed_sweep_performance.png` | Histograms of delivery and latency metrics across seeds |
+| `seed_sweep_metrics.json` | Per-metric means, per-seed values, sample deviations, and approximate intervals, including operational alarm metrics |
+| `seed_sweep_performance.png` | Histograms of delivery and latency metrics across seeds, with mean and approximate confidence interval |
+| `alarm_response_analysis.png` | Distributions of temperature and door alarm response delays and observed thermal exposure |
+| `network_sensitivity_metrics.json` | Delivery, event-window coverage, alarm detection, and response metrics at each packet-loss scenario |
+| `network_loss_sensitivity.png` | The effect of packet loss on overall delivery, excursion-window coverage, and alarm delay |
+| `lwt_keepalive_sensitivity.json` | Keep-alive settings and formula-based Last Will detection estimates |
+| `lwt_keepalive_sensitivity.png` | The theoretical relationship between MQTT keep-alive and Last Will detection delay |
 
 `--output-dir` is created if needed. Running again replaces matching generated report files in that directory.
 
-The checked-in 100-seed example (base seed `410103`) produced a mean delivery ratio of **98.9796%** (approximate 95% interval: **98.8564-99.1028%**), mean network latency of **77.5784 ms** (approximate interval: **77.2740-77.8828 ms**), and mean network P95 latency of **115.8451 ms**. These values summarize this synthetic model only; they are not real-network benchmarks.
+### Reading the seed-sweep chart
+
+Each histogram bar counts seeds (trials), not individual MQTT messages. Each seed contributes one delivery percentage, one average latency, and one per-trial P95 latency. The dashed line is the mean across seeds; the shaded band is an approximate 95% confidence interval for that mean. In particular, P95 is the 95th percentile of message latency within a trial; it is not the confidence interval.
+
+The checked-in 100-seed example (base seed `410103`) produced a mean delivery ratio of **98.9796%** (approximate 95% interval: **98.8564-99.1028%**), mean network latency of **77.5784 ms** (approximate interval: **77.2740-77.8828 ms**), and mean per-trial network P95 latency of **115.8451 ms**. These values summarize this synthetic model only; they are not real-network benchmarks.
+
+The thermal compliance percentage includes delivered sensor samples only. Excursion degree-minutes are a trapezoidal estimate over contiguous received samples; intervals with packet gaps are omitted rather than inferred. Alarm detection delays are measured from the injected temperature excursion start or from the door alarm threshold, as labeled. Last Will sensitivity uses the theoretical `1.5 x keep-alive` estimate and must not be presented as a measured broker response.
+
+The [reports guide](reports/README.md) explains each chart and gives a practical interpretation of the generated 100-seed findings.
 
 ## Run the local MQTT broker and Node-RED
 
