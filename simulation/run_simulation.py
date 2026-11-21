@@ -8,8 +8,9 @@ import csv
 import json
 import math
 import random
+import tempfile
 from pathlib import Path
-from statistics import mean
+from statistics import mean, stdev
 
 import matplotlib
 
@@ -28,6 +29,7 @@ DOOR_ALARM_AFTER_S = 30
 
 
 def percentile(values: list[float], quantile: float) -> float:
+    """Return the nearest-rank percentile of the supplied values."""
     if not values:
         return 0.0
     ordered = sorted(values)
@@ -35,7 +37,7 @@ def percentile(values: list[float], quantile: float) -> float:
 
 
 def run_simulation(output_dir: Path, seed: int = 410103) -> dict[str, object]:
-    """Run one simulated hour and write CSV, JSON, and a PNG performance plot."""
+    """Run one synthetic trial and write its telemetry, events, metrics, and charts."""
     rng = random.Random(seed)
     output_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, object]] = []
@@ -178,9 +180,9 @@ def _write_performance_chart(
     records: list[dict[str, object]],
     events: list[dict[str, object]],
 ) -> None:
+    """Plot thermal compliance, door state, alarm times, and MQTT latency."""
     times = [float(row["timestamp_s"]) / 60 for row in records]
     temperatures = [float(row["temperature_c"]) for row in records]
-    humidities = [float(row["humidity_pct"]) for row in records]
     latencies = [float(row["mqtt_latency_ms"]) for row in records]
     door_open_times = [
         float(row["timestamp_s"]) / 60 for row in records if row["door_open"]
@@ -195,24 +197,27 @@ def _write_performance_chart(
     ]
 
     figure, axes = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
-    axes[0].plot(times, temperatures, label="Temperatura (°C)", color="#1565c0")
+    axes[0].plot(times, temperatures, label="Temperature (C)", color="#1565c0")
     axes[0].axhspan(
-        TEMPERATURE_MIN_C, TEMPERATURE_MAX_C, color="#66bb6a", alpha=0.16,
-        label="Faixa de conformidade (2–8 °C)",
+        TEMPERATURE_MIN_C,
+        TEMPERATURE_MAX_C,
+        color="#66bb6a",
+        alpha=0.16,
+        label="Compliance range (2-8 C)",
     )
     axes[0].scatter(
         door_open_times,
         door_open_temps,
-        label="Porta aberta",
+        label="Door open",
         color="#ef6c00",
         s=18,
     )
-    axes[0].set_ylabel("Temperatura (°C)")
-    axes[0].set_title("Simulação da telemetria de cadeia de frio")
+    axes[0].set_ylabel("Temperature (C)")
+    axes[0].set_title("Cold-chain telemetry simulation")
     axes[0].legend(loc="upper right")
     axes[0].grid(alpha=0.25)
 
-    axes[1].plot(times, latencies, label="Latência MQTT (ms)", color="#6a1b9a")
+    axes[1].plot(times, latencies, label="MQTT latency (ms)", color="#6a1b9a")
     axes[1].axhline(
         percentile(latencies, 0.95),
         color="#ad1457",
@@ -225,14 +230,14 @@ def _write_performance_chart(
             color="#d32f2f",
             alpha=0.55,
             linestyle=":",
-            label="Alarme detectado" if index == 0 else None,
+            label="Alarm detected" if index == 0 else None,
         )
     offline_at_min = DEVICE_DISCONNECT_S / 60
     axes[1].axvline(
-        offline_at_min, color="#424242", linestyle="--", label="Desconexão do nó"
+        offline_at_min, color="#424242", linestyle="--", label="Node disconnect"
     )
-    axes[1].set_xlabel("Tempo simulado (minutos)")
-    axes[1].set_ylabel("Latência (ms)")
+    axes[1].set_xlabel("Simulated time (minutes)")
+    axes[1].set_ylabel("Latency (ms)")
     axes[1].legend(loc="upper right")
     axes[1].grid(alpha=0.25)
     figure.savefig(output_path, dpi=160)
@@ -246,6 +251,7 @@ def _write_system_performance_chart(
     received_messages: int,
     lwt_detection_latency_s: float,
 ) -> None:
+    """Plot latency, message delivery, and estimated MQTT last-will detection."""
     times = [float(row["timestamp_s"]) / 60 for row in records]
     latencies = [float(row["mqtt_latency_ms"]) for row in records]
     latency_mean = mean(latencies)
@@ -253,12 +259,12 @@ def _write_system_performance_chart(
     lost_messages = generated_messages - received_messages
 
     figure, axes = plt.subplots(3, 1, figsize=(11, 10), constrained_layout=True)
-    axes[0].plot(times, latencies, color="#6a1b9a", linewidth=1, label="Amostras")
+    axes[0].plot(times, latencies, color="#6a1b9a", linewidth=1, label="Samples")
     axes[0].axhline(
         latency_mean,
         color="#00838f",
         linestyle="--",
-        label=f"Média: {latency_mean:.1f} ms",
+        label=f"Mean: {latency_mean:.1f} ms",
     )
     axes[0].axhline(
         latency_p95,
@@ -266,47 +272,156 @@ def _write_system_performance_chart(
         linestyle=":",
         label=f"P95: {latency_p95:.1f} ms",
     )
-    axes[0].set_title("Latência de rede simulada")
-    axes[0].set_ylabel("Latência (ms)")
+    axes[0].set_title("Simulated network latency")
+    axes[0].set_ylabel("Latency (ms)")
     axes[0].legend(loc="upper right")
     axes[0].grid(alpha=0.25)
 
     bars = axes[1].bar(
-        ["Recebidas", "Perdidas"],
+        ["Received", "Lost"],
         [received_messages, lost_messages],
         color=["#2e7d32", "#c62828"],
     )
     axes[1].bar_label(bars)
     delivery_ratio = received_messages / generated_messages * 100
-    axes[1].set_title(f"Entrega MQTT simulada: {delivery_ratio:.2f}%")
-    axes[1].set_ylabel("Mensagens")
+    axes[1].set_title(f"Simulated MQTT delivery: {delivery_ratio:.2f}%")
+    axes[1].set_ylabel("Messages")
     axes[1].grid(axis="y", alpha=0.25)
 
     axes[2].bar(
-        ["Keep-alive", "Detecção LWT"],
+        ["Keep-alive", "LWT detection"],
         [MQTT_KEEPALIVE_S, lwt_detection_latency_s],
         color=["#546e7a", "#ef6c00"],
     )
-    axes[2].set_title("Disponibilidade após desconexão abrupta simulada")
-    axes[2].set_ylabel("Tempo (s)")
+    axes[2].set_title("Availability after simulated abrupt disconnect")
+    axes[2].set_ylabel("Time (s)")
     axes[2].grid(axis="y", alpha=0.25)
 
     figure.savefig(output_path, dpi=160)
     plt.close(figure)
 
 
+def run_experiment(
+    output_dir: Path, base_seed: int = 410103, runs: int = 1
+) -> dict[str, object]:
+    """Run sequential independent seeds and report means, spread, and approximate intervals."""
+    if runs < 1:
+        raise ValueError("runs must be at least 1")
+
+    seed_values = [base_seed + run_index for run_index in range(runs)]
+    trial_metrics: list[dict[str, object]] = []
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for run_index, seed in enumerate(seed_values):
+        if run_index == 0:
+            trial_metrics.append(run_simulation(output_dir, seed=seed))
+            continue
+
+        # Keep additional trial artifacts temporary; preserve the first trial as a detailed example.
+        with tempfile.TemporaryDirectory(prefix="cold-chain-seed-") as temporary_directory:
+            trial_metrics.append(run_simulation(Path(temporary_directory), seed=seed))
+
+    metric_names = (
+        "delivery_ratio_pct",
+        "network_latency_mean_ms",
+        "network_latency_p95_ms",
+        "alarm_count",
+        "temperature_excursions",
+        "door_open_alarms",
+    )
+    aggregated_metrics: dict[str, dict[str, object]] = {}
+    for metric_name in metric_names:
+        values = [float(metrics[metric_name]) for metrics in trial_metrics]
+        average = mean(values)
+        standard_deviation = stdev(values) if runs > 1 else None
+        interval = None
+        if standard_deviation is not None:
+            # This normal-approximation interval is descriptive, especially for small run counts.
+            margin = 1.96 * standard_deviation / math.sqrt(runs)
+            interval = [round(average - margin, 4), round(average + margin, 4)]
+        aggregated_metrics[metric_name] = {
+            "mean": round(average, 4),
+            "values": [round(value, 4) for value in values],
+            "sample_standard_deviation": (
+                round(standard_deviation, 4)
+                if standard_deviation is not None
+                else None
+            ),
+            "approximate_95_percent_confidence_interval": interval,
+        }
+
+    summary: dict[str, object] = {
+        "simulation": "synthetic; not measured on physical hardware",
+        "base_seed": base_seed,
+        "run_count": runs,
+        "seed_values": seed_values,
+        "confidence_interval_method": (
+            "Normal approximation: mean +/- 1.96 * sample standard deviation / sqrt(n); "
+            "descriptive only, especially for small samples."
+            if runs > 1
+            else "Not estimated for a single run."
+        ),
+        "metrics": aggregated_metrics,
+    }
+    (output_dir / "seed_sweep_metrics.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
+    _write_seed_sweep_chart(
+        output_dir / "seed_sweep_performance.png", trial_metrics, runs
+    )
+    return summary
+
+
+def _write_seed_sweep_chart(
+    output_path: Path, trial_metrics: list[dict[str, object]], runs: int
+) -> None:
+    """Visualize delivery ratio, average latency, and P95 across seed trials."""
+    series = (
+        ("delivery_ratio_pct", "Message delivery ratio (%)", "#2e7d32"),
+        ("network_latency_mean_ms", "Mean network latency (ms)", "#00838f"),
+        ("network_latency_p95_ms", "P95 network latency (ms)", "#6a1b9a"),
+    )
+    figure, axes = plt.subplots(3, 1, figsize=(10, 9), constrained_layout=True)
+    for axis, (metric_name, title, color) in zip(axes, series):
+        values = [float(metrics[metric_name]) for metrics in trial_metrics]
+        axis.hist(values, bins=min(20, max(1, runs)), color=color, alpha=0.8)
+        axis.axvline(mean(values), color="#212121", linestyle="--", label=f"Mean: {mean(values):.2f}")
+        axis.set_title(title)
+        axis.set_xlabel("Metric value across independent seeds")
+        axis.set_ylabel("Run count")
+        axis.legend(loc="upper right")
+        axis.grid(axis="y", alpha=0.25)
+    figure.suptitle(f"Monte Carlo seed sweep (n={runs})")
+    figure.savefig(output_path, dpi=160)
+    plt.close(figure)
+
+
 def main() -> None:
+    """Parse command-line options, run the seed sweep, and print its summary."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path(__file__).resolve().parents[1] / "reports",
-        help="diretório para salvar métricas, eventos, CSV e gráfico",
+        help="Directory for metrics, events, telemetry, and charts",
     )
-    parser.add_argument("--seed", type=int, default=410103)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=410103,
+        help="Base seed used for the first trial (default: 410103)",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Number of independent sequential seeds (default: 1)",
+    )
     args = parser.parse_args()
-    metrics = run_simulation(args.output_dir, seed=args.seed)
-    print(json.dumps(metrics, indent=2, ensure_ascii=False))
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
+    summary = run_experiment(args.output_dir, base_seed=args.seed, runs=args.runs)
+    print(json.dumps(summary, indent=2, ensure_ascii=True))
 
 
 if __name__ == "__main__":

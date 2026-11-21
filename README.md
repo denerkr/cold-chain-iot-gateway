@@ -1,86 +1,149 @@
-# Gateway de monitoramento e rastreamento de cadeia de frio
+# Cold-Chain IoT Monitoring Gateway
 
-Protótipo distribuído para a disciplina DAS410103, desenvolvido por **Dener Kraus** e **Henrique Bueno de Morais**. A arquitetura integra ESP32 e DHT22 simulados no Wokwi, MQTT com Last Will and Testament (LWT), processamento de regras no Node-RED e um dashboard de telemetria.
+An academic distributed-systems prototype for monitoring temperature-sensitive cargo. The project combines an ESP32 and DHT22 simulated in Wokwi, MQTT messaging with a Last Will and Testament (LWT), Node-RED validation and alarms, a live dashboard, and a reproducible offline Monte Carlo simulator.
 
-> Este projeto é uma demonstração acadêmica. A simulação gera dados sintéticos e não substitui calibração, validação metrológica ou monitoramento de cargas reais.
+**Authors:** Dener Kraus and Henrique Bueno de Morais
 
-## Arquitetura
+**Course:** DAS410103 - Basic Concepts of IoT and Distributed Systems
 
-```text
-ESP32 + DHT22 + contato da porta
-  ├─ cold-chain/<device_id>/telemetry  → temperatura, umidade e porta
-  ├─ cold-chain/<device_id>/alarms     → excursão térmica e porta aberta
-  └─ cold-chain/<device_id>/status     → online/offline (LWT retido)
-                       │
-                       ▼
-             Broker MQTT Mosquitto
-                       │
-                       ▼
-          Node-RED: validação e regras
-                       │
-                       ▼
-        Dashboard em http://localhost:1880/ui
+> This is a teaching prototype, not a validated cold-chain monitoring or safety system. Simulation metrics are synthetic estimates, not measurements from a physical device or network.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Device["Wokwi device"]
+        DHT["DHT22 temperature / humidity"]
+        Door["Door push button"]
+        ESP32["ESP32 firmware"]
+        DHT --> ESP32
+        Door --> ESP32
+    end
+    ESP32 -->|"telemetry, alarms, retained status / LWT"| MQTT["MQTT broker"]
+    MQTT -->|"cold-chain/+/telemetry"| Validate["Node-RED validation and alarm rules"]
+    MQTT -->|"cold-chain/+/alarms and cold-chain/+/status"| Event["Node-RED event and status handlers"]
+    Validate --> Dashboard["Node-RED Dashboard"]
+    Event --> Dashboard
+    Simulator["Offline multi-seed simulator"] --> Reports["CSV, JSON, PNG reports"]
 ```
 
-O ESP32 envia uma amostra a cada 10 segundos. Temperaturas fora de 2–8 °C geram evento na mudança de estado; porta aberta por mais de 30 segundos gera alarme. O keep-alive MQTT é de 30 segundos. Em uma desconexão abrupta, o broker publica o LWT `offline` retido após detectar a perda de conexão (o instante real depende do broker e da rede).
+The firmware samples every 10 seconds, uses a 30-second MQTT keep-alive, and publishes temperature, relative humidity, door state, and uptime. The thermal compliance range is 2-8 C. Firmware and Node-RED independently evaluate temperature and door alarms; Node-RED routes its own alarm results directly to the dashboard, while firmware alarm events arrive over MQTT. Node-RED does not republish its locally detected alarms, which avoids MQTT echo loops.
 
-## Executar a simulação e gerar gráficos
+For abrupt loss of the device connection, its MQTT CONNECT packet registers a retained QoS 1 `offline` LWT on `cold-chain/<device_id>/status`. The broker normally detects a missing client after up to 1.5 times the keep-alive interval (45 seconds for this configuration); the actual delay depends on broker and network behavior.
 
-Requer Python 3.9 ou superior. No PowerShell, na pasta do projeto:
+Detailed function call paths, message shapes, design decisions, and per-directory notes are in [`docs/architecture.md`](docs/architecture.md) and each implementation directory's `README.md`. The [`DEVELOPMENT.md`](DEVELOPMENT.md) file preserves the project's design and change history for future maintainers and AI coding assistants.
+
+## Install from a clean Windows computer
+
+The commands below assume Windows 10/11, PowerShell, and `winget`. Install the three required tools from an elevated or regular PowerShell terminal:
 
 ```powershell
+winget install --exact --id Git.Git
+winget install --exact --id Python.Python.3.12
+winget install --exact --id Docker.DockerDesktop
+```
+
+Restart PowerShell after installation. Start Docker Desktop and complete its first-run WSL 2 setup if prompted. If WSL is not installed, run the following command from an elevated PowerShell terminal and restart Windows:
+
+```powershell
+wsl --install
+```
+
+From the project directory, create and activate a virtual environment and install Python dependencies:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+```
+
+If PowerShell blocks activation, allow it for the current terminal only and activate again:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+Git is needed to clone this repository. Docker Desktop is only required to run the local MQTT broker and Node-RED; the offline simulator only requires Python and its dependencies.
+
+## Run simulations
+
+Run one deterministic trial (the default) and its tests:
+
+```powershell
 python -m simulation.run_simulation
 python -m unittest discover -s tests -v
 ```
 
-A simulação é determinística (semente padrão `410103`), representa uma hora de dados em segundos de execução, introduz uma excursão térmica, abertura prolongada da porta, perda de mensagens configurável e desconexão inesperada do dispositivo. Ela é offline: as métricas são resultados do modelo sintético, não medições de um broker ou hardware real.
-
-Os artefatos são salvos em [`reports/`](reports/):
-
-- `performance_overview.png`: temperatura, faixa de conformidade, porta aberta, latência MQTT, alarmes e instante de desconexão.
-- `system_performance.png`: latência média/P95, mensagens recebidas/perdidas e estimativa de detecção do LWT.
-- `simulation_metrics.json`: volume de mensagens, taxa de entrega, latência média e P95, alarmes e latência estimada do LWT.
-- `telemetry.csv` e `events.json`: amostras recebidas e eventos que permitem reproduzir a análise.
-
-Para alterar a semente ou destino dos artefatos:
+Run multiple independent trials with sequential seeds, for example 100 replications starting at seed 410103:
 
 ```powershell
-python -m simulation.run_simulation --seed 123 --output-dir reports
+python -m simulation.run_simulation --seed 410103 --runs 100
 ```
 
-## Executar broker e Node-RED
+`--runs` is the number of independent pseudorandom trials; trial `i` uses seed `--seed + i`. More runs generally give a more stable estimate of variability, at the cost of more computation. The reported 95% intervals are normal approximations based on the sample standard deviation; they are descriptive and may be imprecise with small sample counts. A single run reports no confidence interval. Results can differ if the model or its constants change, even when the seed is unchanged.
 
-Requer Docker Desktop com Docker Compose:
+Available options:
+
+```powershell
+python -m simulation.run_simulation --help
+python -m simulation.run_simulation --seed 123 --runs 25 --output-dir reports
+```
+
+The simulator advances one synthetic hour without waiting an hour in real time. It models telemetry until a device disconnects at 3,000 simulated seconds, a 1% message-drop probability, network latency, a thermal excursion, an open door, and estimated LWT detection. These are modeled conditions, not measurements from a real MQTT broker.
+
+The output directory contains:
+
+| File | Contents |
+| --- | --- |
+| `telemetry.csv` | Received samples from the first trial |
+| `events.json` | First-trial thermal, door, and LWT events |
+| `simulation_metrics.json` | First-trial delivery, latency, and alarm metrics |
+| `performance_overview.png` | Temperature, compliance band, door-open periods, MQTT latency, alarms, and disconnect time |
+| `system_performance.png` | First-trial latency, delivery, and LWT estimates |
+| `seed_sweep_metrics.json` | Per-metric means, per-seed values, sample deviations, and approximate intervals |
+| `seed_sweep_performance.png` | Histograms of delivery and latency metrics across seeds |
+
+`--output-dir` is created if needed. Running again replaces matching generated report files in that directory.
+
+The checked-in 100-seed example (base seed `410103`) produced a mean delivery ratio of **98.9796%** (approximate 95% interval: **98.8564-99.1028%**), mean network latency of **77.5784 ms** (approximate interval: **77.2740-77.8828 ms**), and mean network P95 latency of **115.8451 ms**. These values summarize this synthetic model only; they are not real-network benchmarks.
+
+## Run the local MQTT broker and Node-RED
+
+Start Docker Desktop, then start the services from the project root:
 
 ```powershell
 docker compose up -d
+docker compose ps
 ```
 
-Abra `http://localhost:1880/ui` para o dashboard. Os fluxos são carregados de [`node-red/flows.json`](node-red/flows.json), e o Node-RED instala o pacote Dashboard declarado em [`node-red/package.json`](node-red/package.json). Os serviços ficam limitados a `127.0.0.1`; o Mosquitto usa acesso anônimo apenas para esta demonstração local. Não exponha essa configuração à rede ou à internet.
+Open the Node-RED editor at `http://localhost:1880` and the dashboard at `http://localhost:1880/ui`. The initial flow is [`node-red/flows.json`](node-red/flows.json), and Node-RED loads Dashboard from [`node-red/package.json`](node-red/package.json).
 
-Para encerrar:
+Stop the services with:
 
 ```powershell
 docker compose down
 ```
 
-Os fluxos assinam `cold-chain/+/telemetry`, `cold-chain/+/alarms` e `cold-chain/+/status`. O Node-RED descarta JSON inválido, valida os campos de telemetria, verifica a faixa térmica e monitora a duração de abertura da porta. O dashboard apresenta valores atuais, gráficos, estado do gateway e último alarme.
+The local Mosquitto listener and Node-RED web interface bind to `127.0.0.1`. Anonymous MQTT access is intentionally limited to this local teaching setup; do not expose this broker to a network or the Internet.
 
-## ESP32 no Wokwi
+## Run the ESP32 in Wokwi
 
-1. Crie um projeto ESP32 no [Wokwi](https://wokwi.com/projects/new/esp32).
-2. Copie [`wokwi/sketch.ino`](wokwi/sketch.ino) e [`wokwi/diagram.json`](wokwi/diagram.json) para o projeto. Cadastre as bibliotecas listadas em [`wokwi/libraries.txt`](wokwi/libraries.txt).
-3. Execute a simulação e altere temperatura/umidade do DHT22 ou pressione `D` para abrir/fechar a porta.
-4. O firmware de exemplo usa o broker público `broker.hivemq.com` sem TLS nem autenticação. Para integrar o Wokwi ao dashboard local, configure firmware e Node-RED para o mesmo broker acessível por ambos; o endereço `mosquitto` do Compose só é resolvido dentro da rede Docker e não é acessível diretamente pelo Wokwi. Para uso seguro e fora da demonstração, configure autenticação, TLS e um broker privado.
+1. Create an ESP32 project at [Wokwi](https://wokwi.com/projects/new/esp32).
+2. Copy [`wokwi/sketch.ino`](wokwi/sketch.ino) and [`wokwi/diagram.json`](wokwi/diagram.json) into the project.
+3. Add the libraries listed in [`wokwi/libraries.txt`](wokwi/libraries.txt).
+4. Start the simulation. Change DHT22 values to exercise temperature alarms; press `D` to operate the door input.
 
-O status `online` é publicado após a conexão. O LWT `offline` é configurado com QoS 1 e retenção no handshake MQTT. Telemetria e alarmes são publicados sem retenção. O `PubSubClient` usado no sketch publica mensagens QoS 0; a assinatura do Node-RED solicita QoS 1, mas a entrega efetiva nunca supera o QoS oferecido pelo publicador.
+The example firmware uses the public `broker.hivemq.com` broker on port 1883 without TLS or authentication. The local Compose stack uses its own Mosquitto instance and is **not automatically connected** to Wokwi. For a live dashboard demonstration, configure the Node-RED MQTT broker node to use the same accessible broker and port as the firmware, or use a properly secured broker that both clients can reach. The `mosquitto` hostname only resolves inside the Compose network. Never publish sensitive or production data to a public demo broker.
 
-## Roteiro sugerido para demonstração em vídeo
+The firmware uses `PubSubClient`, which publishes telemetry at QoS 0; a QoS 1 subscription cannot raise the publisher's delivery guarantee.
 
-1. Apresentar a arquitetura distribuída e os tópicos MQTT.
-2. Mostrar o ESP32, as leituras e o acionamento da porta no Wokwi.
-3. Inspecionar no Node-RED a validação, os limiares e o fluxo de alarmes.
-4. Apresentar o dashboard e os gráficos de desempenho da simulação.
-5. Desconectar o nó abruptamente e observar a publicação do LWT `offline`.
-6. Dividir a explicação do código e a demonstração igualmente entre os integrantes.
+## Suggested presentation outline
+
+1. Explain the distributed architecture, device identifier, and MQTT topic structure.
+2. Show DHT22 readings and door events in Wokwi.
+3. Walk through Node-RED validation, rule evaluation, and dashboard paths.
+4. Compare the reproducible synthetic performance charts and discuss their limitations.
+5. Stop the Wokwi client abruptly and observe the retained offline LWT status.
+6. Divide implementation and demonstration time evenly between both authors.

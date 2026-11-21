@@ -25,10 +25,12 @@ uint32_t doorOpenedAtMs = 0;
 bool doorAlarmSent = false;
 bool temperatureAlarmActive = false;
 
+// Build the device-specific MQTT topic for the requested message type.
 String topic(const char *suffix) {
   return String("cold-chain/") + DEVICE_ID + "/" + suffix;
 }
 
+// Connect the ESP32 to the simulator-provided wireless network.
 void connectWifi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
@@ -36,6 +38,7 @@ void connectWifi() {
   }
 }
 
+// Connect to MQTT and register a retained offline last will for this device.
 void connectMqtt() {
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
   mqttClient.setKeepAlive(30);
@@ -54,6 +57,7 @@ void connectMqtt() {
   }
 }
 
+// Publish one JSON alarm event on the device alarm topic.
 void publishAlarm(const char *code, const char *message) {
   const String alarmTopic = topic("alarms");
   char payload[160];
@@ -63,11 +67,12 @@ void publishAlarm(const char *code, const char *message) {
   mqttClient.publish(alarmTopic.c_str(), payload, false);
 }
 
+// Read sensors, apply temperature and door rules, and publish one telemetry sample.
 void publishTelemetry() {
   const float temperature = dht.readTemperature();
   const float humidity = dht.readHumidity();
   if (isnan(temperature) || isnan(humidity)) {
-    Serial.println("Erro: leitura invalida do DHT22");
+    Serial.println("Error: invalid DHT22 reading");
     return;
   }
 
@@ -84,14 +89,14 @@ void publishTelemetry() {
   const bool temperatureOutOfRange =
       temperature < MIN_TEMPERATURE_C || temperature > MAX_TEMPERATURE_C;
   if (temperatureOutOfRange && !temperatureAlarmActive) {
-    publishAlarm("temperature_excursion", "Temperatura fora da faixa de 2 a 8 C");
+    publishAlarm("temperature_excursion", "Temperature outside the 2 to 8 C range");
   } else if (!temperatureOutOfRange && temperatureAlarmActive) {
-    publishAlarm("temperature_restored", "Temperatura voltou para a faixa de 2 a 8 C");
+    publishAlarm("temperature_restored", "Temperature returned to the 2 to 8 C range");
   }
   temperatureAlarmActive = temperatureOutOfRange;
 
   if (doorOpen && !doorAlarmSent && now - doorOpenedAtMs >= MAX_DOOR_OPEN_MS) {
-    publishAlarm("door_open_too_long", "Porta aberta por mais de 30 segundos");
+    publishAlarm("door_open_too_long", "Door has been open for more than 30 seconds");
     doorAlarmSent = true;
   }
 
@@ -103,11 +108,12 @@ void publishTelemetry() {
            static_cast<unsigned long>(now / 1000));
   const String telemetryTopic = topic("telemetry");
   if (!mqttClient.publish(telemetryTopic.c_str(), payload, false)) {
-    Serial.println("Erro: falha ao publicar telemetria");
+    Serial.println("Error: failed to publish telemetry");
   }
 }
 }  // namespace
 
+// Initialize serial logging, the door input, the sensor, Wi-Fi, and MQTT.
 void setup() {
   Serial.begin(115200);
   pinMode(DOOR_PIN, INPUT_PULLUP);
@@ -116,6 +122,7 @@ void setup() {
   connectMqtt();
 }
 
+// Maintain Wi-Fi and MQTT connections and publish telemetry on schedule.
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     connectWifi();
