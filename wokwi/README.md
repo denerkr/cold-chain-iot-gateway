@@ -1,6 +1,6 @@
 # Wokwi ESP32 Device
 
-This directory contains the simulated board wiring (`diagram.json`), firmware (`sketch.ino`), and required Arduino libraries (`libraries.txt`). The ESP32 uses GPIO 15 for the DHT22 data line and GPIO 27 for the door push button; the button is read with `INPUT_PULLUP`.
+This directory contains the simulated board wiring (`diagram.json`), firmware (`sketch.ino`), and required Arduino libraries (`libraries.txt`). The DHT22 has four pins: connect `VCC` to `3V3`, `SDA` to ESP32 `D15` (GPIO 15), and `GND` to ground; leave `NC` unconnected. The door push button connects to `D27` (GPIO 27) and ground and is read with `INPUT_PULLUP`.
 
 ## Wokwi setup
 
@@ -18,20 +18,29 @@ synthetic demo data.
 
 ## Live verification status
 
-The earlier HTTP 503 from `wss://netwi.wokwi.com/` was not reproduced in the
-latest runs. The standalone probe returned from `WiFi.begin()`, obtained IP
-`10.10.0.2`, and opened TCP to `broker.hivemq.com:1883`. The main firmware also
-reported Wi-Fi and MQTT connected, but repeatedly logged `invalid DHT22
-reading`. This points the current investigation at the sensor/read path rather
-than a demonstrated network-route failure; it does not establish why the
-earlier 503 occurred. No valid telemetry, dashboard update, alarm, or LWT has
-yet been observed end to end. The HiveMQ-to-Mosquitto bridge was separately
-verified using a synthetic message.
+An earlier HTTP 503 from `wss://netwi.wokwi.com/` was not reproduced by the
+standalone probe, which obtained IP `10.10.0.2` and opened TCP to
+`broker.hivemq.com:1883`. The DHT22 issue was a separate wiring-definition
+problem: the old `esp:15` endpoint did not produce a visible/electrical SDA
+connection in Wokwi. The diagram now uses the documented
+`wokwi-esp32-devkit-v1` board and `esp:D15`/`esp:D27` pin names. The recommended
+`DHT sensor library for ESPx` is also in use. A sensor-only simulation now
+reports `status=OK`, `temperature_c=5.00`, and `humidity_pct=55.00` repeatedly.
+
+The latest full firmware run again received HTTP 503 during Wi-Fi association.
+An earlier isolated run reached HiveMQ, so the gateway path has worked in one
+test but failed in another; its cause is unknown. Valid MQTT telemetry after
+the wiring fix, dashboard updates, alarms, and LWT remain unverified end to
+end. The HiveMQ-to-Mosquitto bridge was separately verified using a synthetic
+message.
 
 For a reproducible isolation test that checks Wi-Fi association and outbound
 TCP to HiveMQ without `PubSubClient`, use the separate
 [`network-diagnostic/README.md`](network-diagnostic/README.md) sketch in a
 temporary Wokwi project.
+
+For a sensor-only check that excludes Wi-Fi and MQTT, see
+[`dht-diagnostic/README.md`](dht-diagnostic/README.md).
 
 ## Firmware function map
 
@@ -71,4 +80,5 @@ graph and MQTT payload contract.
 
 - Initial prototype: added DHT22 and door wiring, 10-second telemetry, thermal/door alarms, and retained MQTT LWT status.
 - English documentation pass: translated serial errors, alarm messages, simulator labels, and code comments.
-- Connectivity diagnostics: use Wokwi's documented Wi-Fi channel 6 and report Wi-Fi progress and MQTT retry state to Serial Monitor. A separate probe confirmed virtual Wi-Fi association and TCP reachability to HiveMQ; the main firmware connected to MQTT but reported invalid DHT22 readings.
+- Connectivity diagnostics: use Wokwi's documented Wi-Fi channel 6 and report Wi-Fi progress and MQTT retry state to Serial Monitor. A separate probe confirmed virtual Wi-Fi association and TCP reachability to HiveMQ.
+- DHT22 wiring fix: the former `esp:15` endpoint did not connect the SDA pin in Wokwi. The board and pin references now match Wokwi's ESP32 DHT22 example, and the isolated sensor test repeatedly reads 5.00 C and 55.00% humidity.

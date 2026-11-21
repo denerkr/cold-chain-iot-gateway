@@ -63,14 +63,16 @@ paid plan.
 ### Has the live Wokwi-to-Node-RED path been demonstrated?
 
 Not fully. A standalone Wokwi probe associated with the Public Gateway,
-received IP `10.10.0.2`, and opened TCP to HiveMQ. The main sketch connected to
-Wi-Fi and MQTT but repeatedly reported invalid DHT22 readings, so valid device
-telemetry and alarms were not observed. The HiveMQ-to-local-Mosquitto bridge
-was verified separately with a synthetic message. The dashboard path and
-abrupt-disconnect LWT still need end-to-end observation. An earlier HTTP 503
-was not reproduced, and we cannot identify its cause from the available
-evidence. The offline Python simulator is a separate experiment and is not
-evidence of live MQTT delivery.
+received IP `10.10.0.2`, and opened TCP to HiveMQ. We found that the old diagram
+did not electrically connect the DHT22 SDA pin because it referenced `esp:15`
+instead of the board's `esp:D15` pin. The diagram and ESP32-specific DHT library
+are corrected; an isolated sensor test repeatedly read 5.00 C and 55.00%
+humidity. The latest full firmware run received HTTP 503, so post-fix MQTT
+telemetry, dashboard updates, alarms, and LWT are not yet verified. The bridge
+was separately verified with a synthetic message. An earlier isolated network
+probe reached HiveMQ, but the latest full run failed at the gateway; the cause
+remains unknown. The offline Python simulator is not evidence of live MQTT
+delivery.
 
 ### How are temperature and door alarms generated?
 

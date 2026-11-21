@@ -41,10 +41,10 @@ flowchart TD
 This is a diagnostic probe, not a production client. The successful WebSocket
 upgrade test from the host is a separate check. This probe went further: it
 confirmed that the simulated ESP32 associated with Wokwi's virtual Wi-Fi,
-received IP `10.10.0.2`, and opened TCP to HiveMQ on port 1883. The main
-application was then run separately; it connected to Wi-Fi and MQTT but logged
-invalid DHT22 readings. The probe does not test MQTT CONNECT/publish, bridge
-delivery, Node-RED, sensor wiring, or the cause of the earlier HTTP 503.
+received IP `10.10.0.2`, and opened TCP to HiveMQ on port 1883. The probe does
+not test MQTT CONNECT/publish, bridge delivery, Node-RED, sensor wiring, or the
+cause of the earlier HTTP 503. For the DHT22 wiring and driver test, see
+[`../dht-diagnostic/README.md`](../dht-diagnostic/README.md).
 
 ## Observed result
 
@@ -54,8 +54,8 @@ delivery, Node-RED, sensor wiring, or the cause of the earlier HTTP 503.
 | Wi-Fi API call | `PROBE: WiFi.begin() returned` | The startup call returned; it did not stall in `WiFi.begin()`. |
 | Association | Assigned IP `10.10.0.2`; Wokwi UI showed `WiFi: Connected to Wokwi-GUEST (Public IoT Gateway)` | The ESP32 simulator associated with Wokwi's virtual access point. |
 | Outbound route | `PROBE: TCP connection succeeded` to `broker.hivemq.com:1883` | DNS and TCP connectivity from the simulated ESP32 to HiveMQ worked in this run. |
-| Main firmware | `Connected to MQTT broker`, followed by repeated `Error: invalid DHT22 reading` | The main firmware passed Wi-Fi and MQTT connection, but valid sensor data was not obtained; telemetry and alarms were therefore not verified. |
+| Main firmware before the wiring correction | MQTT connected, then repeated invalid DHT22 readings | The DHT22 SDA endpoint was not connected; the corrected wiring is verified separately by the sensor-only diagnostic. |
 
 These are successful observations from individual runs, not a guarantee of
-continuous gateway availability. The earlier HTTP 503 was not reproduced, and
-its cause remains unknown.
+continuous gateway availability. The standalone probe did not reproduce the
+HTTP 503, but a later full firmware run did; the cause remains unknown.

@@ -8,7 +8,7 @@ An academic distributed-systems prototype for monitoring temperature-sensitive c
 
 > This is a teaching prototype, not a validated cold-chain monitoring or safety system. Simulation metrics are synthetic estimates, not measurements from a physical device or network.
 
-> **Live integration status:** A new Wokwi diagnostic run joined the Public Gateway network, received IP `10.10.0.2`, and opened TCP to HiveMQ on port 1883. The main sketch also connected to HiveMQ over MQTT, but repeatedly reported invalid DHT22 readings, so no valid telemetry was observed. An earlier HTTP 503 was not reproduced in these runs; its cause is not established. The HiveMQ-to-local-Mosquitto bridge was separately verified with a synthetic message. The complete device-to-dashboard, alarm, and LWT path remains unverified.
+> **Live integration status:** The DHT22 issue was traced to an invalid Wokwi board-pin reference: the SDA data wire was not rendered or electrically connected. The diagram now uses Wokwi's `wokwi-esp32-devkit-v1` part and connects DHT22 `SDA` to `D15`; `NC` remains unconnected. A sensor-only Wokwi test now repeatedly reads 5.00 C and 55.00% using the ESP32-specific DHT library. The latest full firmware run again received HTTP 503 from Wokwi's Public Gateway; an earlier isolated run reached HiveMQ, so availability was intermittent across tests. Post-fix MQTT telemetry and the complete dashboard/alarm/LWT path still need end-to-end verification.
 
 ## Architecture
 
@@ -199,6 +199,8 @@ services, but that feature requires a paid Wokwi plan.
 The firmware uses `PubSubClient`, which publishes telemetry at QoS 0; a QoS 1 subscription cannot raise the publisher's delivery guarantee.
 
 If Wokwi displays `WiFi Error: Connection to IoT Gateway wss://netwi.wokwi.com/ failed` or a WebSocket HTTP 503, record the simulator output and time, then run the isolated test in [`wokwi/network-diagnostic/README.md`](wokwi/network-diagnostic/README.md). A 503 is evidence that the gateway WebSocket request failed at that time; it does not, by itself, establish a persistent Wokwi outage or rule out other causes. Compare the simulated device's Wi-Fi, TCP, MQTT, and application-level results before attributing the failure. The Public Gateway is a shared service and its availability is not controlled by this project.
+
+For DHT22 wiring and sensor-driver checks independent of Wi-Fi/MQTT, use [`wokwi/dht-diagnostic/README.md`](wokwi/dht-diagnostic/README.md).
 
 ## Suggested presentation outline
 

@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <DHT.h>
+#include <DHTesp.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
 
@@ -11,7 +11,6 @@ constexpr uint16_t MQTT_PORT = 1883;
 constexpr char DEVICE_ID[] = "esp32-ccgw-dk-hb";
 constexpr uint8_t DHT_PIN = 15;
 constexpr uint8_t DOOR_PIN = 27;
-constexpr uint8_t DHT_TYPE = DHT22;
 constexpr uint32_t TELEMETRY_INTERVAL_MS = 10000;
 constexpr float MIN_TEMPERATURE_C = 2.0;
 constexpr float MAX_TEMPERATURE_C = 8.0;
@@ -19,7 +18,7 @@ constexpr uint32_t MAX_DOOR_OPEN_MS = 30000;
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
-DHT dht(DHT_PIN, DHT_TYPE);
+DHTesp dht;
 // Shared runtime state: loop schedules telemetry; publishTelemetry updates
 // door/temperature alarm state so transitions are emitted only once.
 uint32_t lastTelemetryMs = 0;
@@ -108,12 +107,15 @@ void publishAlarm(const char *code, const char *message) {
  * delegates to publishAlarm(); both alarm and telemetry paths use topic().
  */
 void publishTelemetry() {
-  const float temperature = dht.readTemperature();
-  const float humidity = dht.readHumidity();
-  if (isnan(temperature) || isnan(humidity)) {
-    Serial.println("Error: invalid DHT22 reading");
+  const TempAndHumidity reading = dht.getTempAndHumidity();
+  if (dht.getStatus() != DHTesp::ERROR_NONE ||
+      isnan(reading.temperature) || isnan(reading.humidity)) {
+    const String sensorStatus = dht.getStatusString();
+    Serial.printf("Error: DHT22 read failed: %s\n", sensorStatus.c_str());
     return;
   }
+  const float temperature = reading.temperature;
+  const float humidity = reading.humidity;
 
   const bool doorOpen = digitalRead(DOOR_PIN) == LOW;
   const uint32_t now = millis();
@@ -160,7 +162,7 @@ void publishTelemetry() {
 void setup() {
   Serial.begin(115200);
   pinMode(DOOR_PIN, INPUT_PULLUP);
-  dht.begin();
+  dht.setup(DHT_PIN, DHTesp::DHT22);
   connectWifi();
   connectMqtt();
 }

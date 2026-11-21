@@ -72,14 +72,19 @@ classroom data.
 ## Observed live verification status
 
 An earlier Wokwi Public Gateway WebSocket attempt (`wss://netwi.wokwi.com/`)
-returned HTTP 503. In later tests, a standalone ESP32 probe associated with
-Wokwi's virtual Wi-Fi, received IP `10.10.0.2`, and opened TCP to HiveMQ on port
-1883. The main firmware also connected to Wi-Fi and MQTT, but repeatedly
-reported invalid DHT22 readings. The 503 was not reproduced, and its cause is
-unknown; the current evidence does not support attributing it solely to a
-persistent gateway outage. The HiveMQ-to-local-Mosquitto bridge separately
-forwarded a synthetic test message. Valid device telemetry, device alarms,
-dashboard updates, and abrupt-disconnect LWT remain unverified end to end.
+returned HTTP 503. A standalone ESP32 network probe later obtained IP
+`10.10.0.2` and opened TCP to HiveMQ on port 1883. The invalid DHT22 readings
+were traced to an ineffective SDA pin reference: `esp:15` did not create a
+visible/electrical data connection. The diagram now uses Wokwi's
+`wokwi-esp32-devkit-v1` board with `dht:SDA` connected to `esp:D15`; the `NC`
+pin is intentionally left open. The firmware now uses Wokwi's recommended
+ESP32 DHT library. A sensor-only simulation repeatedly read 5.00 C and 55.00%
+humidity. The latest full firmware run again received HTTP 503 during Wi-Fi
+association, although an earlier isolated network probe reached HiveMQ. The
+gateway path therefore succeeded in one test and failed in another; the cause
+remains unknown. Post-fix MQTT telemetry, alarms, dashboard updates, and
+abrupt-disconnect LWT remain unverified end to end. The HiveMQ-to-local-
+Mosquitto bridge separately forwarded a synthetic test message.
 
 ## Firmware call graph
 
