@@ -12,8 +12,19 @@ from simulation.run_simulation import (
 
 
 class SimulationTests(unittest.TestCase):
+    """Exercise reproducibility, validation, metrics, and report integration.
+
+    Tests that generate reports use temporary output directories so artifacts
+    are isolated and removed automatically after assertions complete.
+    """
+
     def test_simulation_emits_alarm_events_and_performance_artifacts(self):
-        """Verify one trial writes reports and detects each required scenario."""
+        """Check the baseline trial's events, metrics, CSV, and performance plots.
+
+        Calls ``run_simulation`` with its default seed, reads the serialized
+        event log, and asserts that temperature, door, and LWT events are
+        present alongside valid delivery counts and all single-run artifacts.
+        """
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_dir = Path(temporary_directory)
             metrics = run_simulation(output_dir)
@@ -38,7 +49,12 @@ class SimulationTests(unittest.TestCase):
             self.assertGreaterEqual(metrics["excursion_window_delivery_pct"], 0)
 
     def test_simulation_is_reproducible_with_same_seed(self):
-        """Verify identical seeds produce identical aggregate trial metrics."""
+        """Prove that a seed fixes all reported metrics despite separate outputs.
+
+        Runs the same trial in two independent temporary directories and
+        compares the returned dictionaries, excluding file contents from the
+        comparison so the assertion targets the simulation's public result.
+        """
         with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
             first = run_simulation(Path(first_dir), seed=12)
             second = run_simulation(Path(second_dir), seed=12)
@@ -46,7 +62,12 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_seed_sweep_aggregates_independent_runs(self):
-        """Verify a multi-seed experiment writes aggregate metrics and its chart."""
+        """Check seed enumeration, metric aggregation, and sweep artifacts.
+
+        Calls ``run_experiment`` for seeds 20-22, recomputes the delivery mean
+        from its per-seed values, verifies the interval exists for multiple
+        runs, and checks that both aggregate charts and JSON were written.
+        """
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_dir = Path(temporary_directory)
             summary = run_experiment(output_dir, base_seed=20, runs=3)
@@ -72,13 +93,21 @@ class SimulationTests(unittest.TestCase):
             )
 
     def test_seed_sweep_rejects_non_positive_run_count(self):
-        """Reject empty seed sweeps instead of returning misleading statistics."""
+        """Ensure an empty experiment is rejected before output generation.
+
+        Calls ``run_experiment`` with zero runs and checks its public validation
+        error rather than accepting an empty or misleading aggregate.
+        """
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(ValueError, "at least 1"):
                 run_experiment(Path(temporary_directory), runs=0)
 
     def test_single_seed_sweep_omits_confidence_interval(self):
-        """Avoid presenting a confidence interval when only one seed was measured."""
+        """Ensure one observation is not presented with inferential statistics.
+
+        Runs a one-seed experiment and confirms the aggregate reports neither
+        sample standard deviation nor a confidence interval.
+        """
         with tempfile.TemporaryDirectory() as temporary_directory:
             summary = run_experiment(Path(temporary_directory), runs=1)
 
@@ -87,6 +116,11 @@ class SimulationTests(unittest.TestCase):
         self.assertIsNone(delivery_metrics["approximate_95_percent_confidence_interval"])
 
     def test_zero_drop_rate_delivers_all_generated_messages(self):
+        """Verify the no-loss boundary case preserves every generated sample.
+
+        Runs the trial with a zero drop probability and checks both overall and
+        excursion-window delivery, including the reported configured rate.
+        """
         with tempfile.TemporaryDirectory() as temporary_directory:
             metrics = run_simulation(
                 Path(temporary_directory),
@@ -100,6 +134,12 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(metrics["excursion_window_delivery_pct"], 100)
 
     def test_simulation_rejects_invalid_drop_rates(self):
+        """Reject out-of-range drop probabilities through both public runners.
+
+        Tests the upper boundary on ``run_simulation`` and a negative rate on
+        ``run_experiment`` to ensure validation is consistent at each entry
+        point before invalid scenarios can produce reports.
+        """
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(ValueError, "less than 1"):
                 run_simulation(Path(temporary_directory), network_drop_rate=1)
@@ -107,6 +147,11 @@ class SimulationTests(unittest.TestCase):
                 run_experiment(Path(temporary_directory), network_drop_rate=-0.1)
 
     def test_non_negative_metric_confidence_interval_does_not_cross_zero(self):
+        """Clamp a descriptive interval's lower endpoint to the metric domain.
+
+        Supplies nonnegative observations whose normal-approximation interval
+        would otherwise extend below zero, then checks the aggregate boundary.
+        """
         summary = _aggregate_metric([0.08, 0.08, 10.08])
 
         self.assertEqual(
@@ -115,6 +160,12 @@ class SimulationTests(unittest.TestCase):
         )
 
     def test_sensitivity_analysis_writes_network_and_lwt_results(self):
+        """Check sensitivity scenario metrics, formula estimates, and artifacts.
+
+        Runs two packet-loss scenarios and two keep-alive settings over three
+        seeds. It verifies the zero-loss baseline, the 1.5x LWT estimate, and
+        all JSON/PNG outputs returned by ``run_sensitivity_analysis``.
+        """
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_dir = Path(temporary_directory)
             summary = run_sensitivity_analysis(

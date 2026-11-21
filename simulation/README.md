@@ -38,6 +38,44 @@ The 95% interval is a normal approximation around the multi-run mean using the s
 - `_write_keepalive_sensitivity_chart`: chart the formula-based LWT delay estimate.
 - `main`: validate CLI arguments, run the seed sweep, and print its JSON summary.
 
+## Function call and data flow
+
+```mermaid
+flowchart TD
+    Main["main()"] --> Experiment["run_experiment()"]
+    Main -.->|sensitivity flag| Sensitivity["run_sensitivity_analysis()"]
+
+    Experiment -->|each seed; first run writes detailed files| Trial["run_simulation()"]
+    Trial --> Timestamp["_event_timestamp()"]
+    Trial --> Exposure["_temperature_excursion_degree_minutes()"]
+    Trial --> Percentile["percentile()"]
+    Trial -->|when write_reports is true| TrialCharts["_write_performance_chart()<br/>_write_system_performance_chart()"]
+    TrialCharts --> Percentile
+    Trial --> Metrics["Per-trial metrics dictionary"]
+
+    Experiment --> Aggregate["_aggregate_metric()"]
+    Metrics --> Aggregate
+    Experiment --> SweepCharts["_write_seed_sweep_chart()<br/>_write_alarm_response_chart()"]
+    Experiment --> SweepJSON["seed_sweep_metrics.json"]
+    Aggregate -.->|aggregated values| SweepCharts
+    Aggregate -.->|summary data| SweepJSON
+
+    Sensitivity -->|each drop rate and seed; no trial files| Trial
+    Sensitivity --> Aggregate
+    Sensitivity --> NetworkChart["_write_network_sensitivity_chart()"]
+    Sensitivity --> KeepaliveChart["_write_keepalive_sensitivity_chart()"]
+    Sensitivity --> SensitivityJSON["network_sensitivity_metrics.json<br/>lwt_keepalive_sensitivity.json"]
+    Aggregate -.->|scenario summaries| NetworkChart
+    Aggregate -.->|summary data| SensitivityJSON
+```
+
+`main()` is the CLI entry point. The solid path always produces the normal
+seed-sweep reports; the dashed path is conditional. A trial returns its metrics
+to either caller, while chart writers receive already-computed records or
+scenario summaries and only save images. In a seed sweep, only the first trial
+writes single-trial CSV/JSON/PNG artifacts; later seeds still return metrics.
+Sensitivity trials never write those per-trial artifacts.
+
 ## Change history
 
 - Initial prototype: implemented seeded synthetic data, stateful alarms, single-run JSON/CSV outputs, and two charts.

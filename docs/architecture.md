@@ -148,19 +148,66 @@ Backend alarm messages go from output 6 directly to `format-alarm`; they are not
 
 ```mermaid
 flowchart TD
-    CLI["main(): --seed, --runs, --output-dir"] --> Experiment["run_experiment(output_dir, base_seed, runs)"]
-    Experiment --> SeedRange["Generate seeds: base_seed through base_seed + runs - 1"]
-    SeedRange --> Trial["run_simulation(output_dir, seed)"]
-    Trial --> Percentile["percentile(values, q)"]
-    Trial --> Reports["CSV, event JSON, metrics JSON, two first-trial charts"]
-    Trial --> TrialMetrics["Per-trial delivery, latency, and alarm metrics"]
-    TrialMetrics --> Aggregate["Mean, sample standard deviation, approximate 95% interval"]
-    Aggregate --> SweepChart["_write_seed_sweep_chart(...)"]
-    Aggregate --> Summary["seed_sweep_metrics.json"]
-    SweepChart --> SweepPNG["seed_sweep_performance.png"]
+    Main["main()"] --> Experiment["run_experiment()"]
+    Main -.->|sensitivity flag| Sensitivity["run_sensitivity_analysis()"]
+
+    Experiment -->|each seed; first run writes detailed files| Trial["run_simulation()"]
+    Trial --> EventTime["_event_timestamp()"]
+    Trial --> DegreeMinutes["_temperature_excursion_degree_minutes()"]
+    Trial --> Percentile["percentile()"]
+    Trial -->|when write_reports is true| SingleCharts["_write_performance_chart()<br/>_write_system_performance_chart()"]
+    SingleCharts --> Percentile
+    Trial --> TrialMetrics["Per-trial delivery, latency, alarm, and exposure metrics"]
+
+    Experiment --> Aggregate["_aggregate_metric()"]
+    TrialMetrics --> Aggregate
+    Experiment --> SweepCharts["_write_seed_sweep_chart()<br/>_write_alarm_response_chart()"]
+    Experiment --> SweepJSON["seed_sweep_metrics.json"]
+    Aggregate -.->|aggregated values| SweepCharts
+    Aggregate -.->|summary data| SweepJSON
+
+    Sensitivity -->|each drop rate x seed; no trial files| Trial
+    Sensitivity --> Aggregate
+    Sensitivity --> NetworkChart["_write_network_sensitivity_chart()"]
+    Sensitivity --> KeepaliveChart["_write_keepalive_sensitivity_chart()"]
+    Sensitivity --> SensitivityJSON["Network and LWT sensitivity JSON"]
+    Aggregate -.->|scenario summaries| NetworkChart
+    Aggregate -.->|summary data| SensitivityJSON
 ```
 
-`run_simulation` uses a local seeded pseudo-random generator and writes full detailed artifacts for one trial. `run_experiment` runs later seeds in temporary directories, preserving the first trial as a detailed example while aggregating all trials. `percentile` uses the nearest-rank definition; the seed-sweep interval uses `mean +/- 1.96 * sample_standard_deviation / sqrt(n)` and is explicitly approximate.
+`run_simulation` uses a local seeded pseudo-random generator. With
+`write_reports=True`, it writes detailed files into the requested output
+directory; `run_experiment` enables that only for its first seed, while all
+other seeds still return metrics. Sensitivity runs disable per-trial output.
+`percentile` uses the nearest-rank definition; `_aggregate_metric` computes
+`mean +/- 1.96 * sample_standard_deviation / sqrt(n)` as a descriptive,
+approximate interval.
+
+## Simulation test call graph
+
+```mermaid
+flowchart TD
+    ArtifactTest["test_simulation_emits_alarm_events_and_performance_artifacts"] --> Trial["run_simulation()"]
+    ReproTest["test_simulation_is_reproducible_with_same_seed"] --> Trial
+    ZeroDropTest["test_zero_drop_rate_delivers_all_generated_messages"] --> Trial
+    DropValidationTest["test_simulation_rejects_invalid_drop_rates"] --> Trial
+
+    SeedTest["test_seed_sweep_aggregates_independent_runs"] --> Experiment["run_experiment()"]
+    InvalidRunTest["test_seed_sweep_rejects_non_positive_run_count"] --> Experiment
+    SingleSeedTest["test_single_seed_sweep_omits_confidence_interval"] --> Experiment
+    DropValidationTest --> Experiment
+
+    IntervalTest["test_non_negative_metric_confidence_interval_does_not_cross_zero"] --> Aggregate["_aggregate_metric()"]
+    SensitivityTest["test_sensitivity_analysis_writes_network_and_lwt_results"] --> Sensitivity["run_sensitivity_analysis()"]
+    Experiment --> Trial
+    Experiment --> Aggregate
+    Sensitivity --> Trial
+    Sensitivity --> Aggregate
+```
+
+The test suite exercises both public orchestration paths and the interval
+boundary helper. Each test uses isolated temporary output directories and
+asserts either returned values, validation behavior, or generated artifacts.
 
 ## Cross-component change checklist
 

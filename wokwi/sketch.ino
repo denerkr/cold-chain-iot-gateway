@@ -20,17 +20,29 @@ constexpr uint32_t MAX_DOOR_OPEN_MS = 30000;
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 DHT dht(DHT_PIN, DHT_TYPE);
+// Shared runtime state: loop schedules telemetry; publishTelemetry updates
+// door/temperature alarm state so transitions are emitted only once.
 uint32_t lastTelemetryMs = 0;
 uint32_t doorOpenedAtMs = 0;
 bool doorAlarmSent = false;
 bool temperatureAlarmActive = false;
 
-// Build the device-specific MQTT topic for the requested message type.
+/*
+ * Build this device's topic path from the common namespace, device identifier,
+ * and message suffix. connectMqtt uses it for status; publishAlarm and
+ * publishTelemetry use it for their respective event and sample topics.
+ * Returning a String keeps topic construction consistent across publishers.
+ */
 String topic(const char *suffix) {
   return String("cold-chain/") + DEVICE_ID + "/" + suffix;
 }
 
-// Connect the ESP32 to the simulator-provided wireless network.
+/*
+ * Start Wi-Fi association and wait until the simulator reports a connection.
+ * setup calls this before MQTT initialization, and loop calls it after a
+ * later disconnect. This implementation deliberately blocks while retrying
+ * every 250 ms; MQTT and sensor work resume only after Wi-Fi is available.
+ */
 void connectWifi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
@@ -38,7 +50,14 @@ void connectWifi() {
   }
 }
 
-// Connect to MQTT and register a retained offline last will for this device.
+/*
+ * Configure the broker and reconnect until the MQTT session is established.
+ * setup and loop call this after Wi-Fi is available. The connect request
+ * registers a QoS 1 retained "offline" Last Will on this device's status
+ * topic; on success this function publishes retained "online" status. A
+ * failed attempt waits two seconds before retrying. topic() supplies the
+ * status path, and the PubSubClient session is subsequently serviced by loop.
+ */
 void connectMqtt() {
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
   mqttClient.setKeepAlive(30);
@@ -57,7 +76,13 @@ void connectMqtt() {
   }
 }
 
-// Publish one JSON alarm event on the device alarm topic.
+/*
+ * Serialize one device-originated alarm and publish it without retaining it.
+ * publishTelemetry calls this only when a temperature state changes or the
+ * door-open duration first crosses its threshold. The Node-RED alarm
+ * subscription consumes this topic. The function uses a fixed-size buffer
+ * and topic() for the device-specific destination.
+ */
 void publishAlarm(const char *code, const char *message) {
   const String alarmTopic = topic("alarms");
   char payload[160];
@@ -67,7 +92,14 @@ void publishAlarm(const char *code, const char *message) {
   mqttClient.publish(alarmTopic.c_str(), payload, false);
 }
 
-// Read sensors, apply temperature and door rules, and publish one telemetry sample.
+/*
+ * Read both DHT22 values, evaluate local alarms, and publish one JSON sample.
+ * loop calls this every TELEMETRY_INTERVAL_MS. Invalid sensor data is logged
+ * and ends this cycle before state or MQTT payloads are changed. Valid reads
+ * update the sampled door-open timer, emit temperature transition events and
+ * at most one long-open-door event, then publish telemetry. Alarm publishing
+ * delegates to publishAlarm(); both alarm and telemetry paths use topic().
+ */
 void publishTelemetry() {
   const float temperature = dht.readTemperature();
   const float humidity = dht.readHumidity();
@@ -113,7 +145,11 @@ void publishTelemetry() {
 }
 }  // namespace
 
-// Initialize serial logging, the door input, the sensor, Wi-Fi, and MQTT.
+/*
+ * Arduino entry point called once at boot. It initializes serial diagnostics,
+ * configures the active-low door button, starts the DHT22, then establishes
+ * Wi-Fi before MQTT so connectMqtt always has network connectivity.
+ */
 void setup() {
   Serial.begin(115200);
   pinMode(DOOR_PIN, INPUT_PULLUP);
@@ -122,7 +158,13 @@ void setup() {
   connectMqtt();
 }
 
-// Maintain Wi-Fi and MQTT connections and publish telemetry on schedule.
+/*
+ * Arduino's repeated service loop. It restores Wi-Fi and then MQTT when
+ * needed, services the MQTT client's keep-alive/network processing, and
+ * invokes publishTelemetry at the configured interval. Unsigned subtraction
+ * keeps the elapsed-time check safe across millis() rollover; the short final
+ * delay yields processor time between iterations.
+ */
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     connectWifi();

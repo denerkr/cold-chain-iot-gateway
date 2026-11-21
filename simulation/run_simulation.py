@@ -34,7 +34,14 @@ DOOR_ALARM_AFTER_S = 30
 
 
 def percentile(values: list[float], quantile: float) -> float:
-    """Return the nearest-rank percentile of the supplied values."""
+    """Return one order statistic using the nearest-rank percentile definition.
+
+    The function sorts a copy of the input, then selects rank ``ceil(q * n)``
+    using one-based percentile rank. An empty input returns ``0.0`` so chart
+    labels remain drawable when no latency samples were received. Callers use
+    this for per-trial latency P95 values; it does not calculate a confidence
+    interval or mutate the caller's list.
+    """
     if not values:
         return 0.0
     ordered = sorted(values)
@@ -42,7 +49,13 @@ def percentile(values: list[float], quantile: float) -> float:
 
 
 def _event_timestamp(events: list[dict[str, object]], event_type: str) -> float | None:
-    """Return the first timestamp for an event type, if it was observed."""
+    """Find the first recorded timestamp for one event type.
+
+    ``run_simulation`` supplies the event records assembled while processing
+    telemetry, plus the synthetic LWT event. A matching numeric timestamp is
+    converted to ``float``; an absent event or nonnumeric timestamp becomes
+    ``None`` so the metric layer can report an undetected alarm explicitly.
+    """
     for event in events:
         if event["type"] == event_type:
             timestamp = event["timestamp_s"]
@@ -53,7 +66,14 @@ def _event_timestamp(events: list[dict[str, object]], event_type: str) -> float 
 def _temperature_excursion_degree_minutes(
     records: list[dict[str, object]],
 ) -> float | None:
-    """Estimate observed thermal exposure over contiguous samples in the excursion."""
+    """Integrate observed temperature excess during the injected excursion.
+
+    Consecutive records are treated as the ends of a linear 10-second segment.
+    Trapezoidal integration accumulates degrees outside the 2-8 C range in
+    degree-minutes. Intervals spanning a lost sample or outside the modeled
+    excursion are excluded rather than reconstructed. ``None`` means there
+    were no contiguous observed intervals to integrate.
+    """
     exposure = 0.0
     observed_intervals = 0
     for previous, current in zip(records, records[1:]):
@@ -82,7 +102,15 @@ def _temperature_excursion_degree_minutes(
 
 
 def _aggregate_metric(values: list[object]) -> dict[str, object]:
-    """Summarize numeric trial values while retaining missing detections as nulls."""
+    """Summarize one metric across trials and preserve unobserved values.
+
+    Numeric values produce their mean, sample standard deviation, and
+    descriptive normal-approximation 95% interval. Missing detections remain
+    ``None`` in the per-run list and are excluded from the observed-run count
+    and statistics. Unsupported input types raise ``TypeError`` instead of
+    silently producing a partial summary. Used by both seed and sensitivity
+    experiments.
+    """
     numeric_values: list[float] = []
     formatted_values: list[float | None] = []
     for value in values:
@@ -124,7 +152,22 @@ def run_simulation(
     network_drop_rate: float = NETWORK_DROP_RATE,
     write_reports: bool = True,
 ) -> dict[str, object]:
-    """Run one synthetic trial and write its telemetry, events, metrics, and charts."""
+    """Generate one deterministic synthetic trial and its optional artifacts.
+
+    Args:
+        output_dir: Destination for one-trial CSV, JSON, and PNG reports.
+        seed: Seed for the local pseudorandom generator.
+        network_drop_rate: Independent per-message drop probability in ``[0, 1)``.
+        write_reports: When false, return metrics without creating report files;
+            seed and sensitivity sweeps use this for their non-example trials.
+
+    The loop skips dropped messages, synthesizes sensor and latency values for
+    delivered samples, and updates temperature/door alarm state. The function
+    then derives event-response and thermal metrics; when requested, it writes
+    the detailed files and calls the two single-trial chart writers. It always
+    returns the metrics dictionary consumed by ``run_experiment`` and
+    ``run_sensitivity_analysis``.
+    """
     if not 0 <= network_drop_rate < 1:
         raise ValueError("network_drop_rate must be at least 0 and less than 1")
 
@@ -346,7 +389,15 @@ def _write_performance_chart(
     records: list[dict[str, object]],
     events: list[dict[str, object]],
 ) -> None:
-    """Plot thermal compliance, door state, alarm times, and MQTT latency."""
+    """Render the detailed first-trial temperature and latency timeline.
+
+    ``run_simulation`` passes the delivered telemetry rows and event records.
+    The upper panel compares observed temperatures with the 2-8 C compliance
+    band and marks samples received while the door was open. The lower panel
+    plots per-message latency and overlays detected alarm and disconnect
+    times. This function only writes the requested PNG; it does not change
+    metrics or simulation state.
+    """
     times = [float(row["timestamp_s"]) / 60 for row in records]
     temperatures = [float(row["temperature_c"]) for row in records]
     latencies = [float(row["mqtt_latency_ms"]) for row in records]
@@ -417,7 +468,13 @@ def _write_system_performance_chart(
     received_messages: int,
     lwt_detection_latency_s: float,
 ) -> None:
-    """Plot latency, message delivery, and estimated MQTT last-will detection."""
+    """Render first-trial latency, delivery, and availability summaries.
+
+    The chart combines per-message latency with its mean/P95, counts received
+    versus lost messages, and compares the configured keep-alive to the
+    modeled LWT detection delay. ``run_simulation`` supplies all values after
+    the trial; the LWT panel is an estimate, not a live broker observation.
+    """
     times = [float(row["timestamp_s"]) / 60 for row in records]
     latencies = [float(row["mqtt_latency_ms"]) for row in records]
     latency_mean = mean(latencies) if latencies else 0.0
@@ -473,7 +530,15 @@ def run_experiment(
     runs: int = 1,
     network_drop_rate: float = NETWORK_DROP_RATE,
 ) -> dict[str, object]:
-    """Run sequential independent seeds and report means, spread, and approximate intervals."""
+    """Run a sequential seed sweep and write per-seed aggregate reports.
+
+    The first seed calls ``run_simulation`` with report writing enabled to
+    preserve a detailed example; later seeds collect metrics only. Each metric
+    is passed to ``_aggregate_metric``, then the function writes
+    ``seed_sweep_metrics.json`` and invokes the seed-distribution and alarm
+    response chart writers. The returned summary is also printed by ``main``
+    and becomes the baseline section of an optional CLI sensitivity result.
+    """
     if runs < 1:
         raise ValueError("runs must be at least 1")
 
@@ -541,7 +606,13 @@ def run_experiment(
 def _write_seed_sweep_chart(
     output_path: Path, trial_metrics: list[dict[str, object]], runs: int
 ) -> None:
-    """Visualize delivery ratio, average latency, and P95 across seed trials."""
+    """Compare per-trial delivery and latency distributions across seeds.
+
+    The input list contains one metric dictionary per seed. Each histogram bar
+    counts trials rather than messages; the dashed line is the mean across
+    seeds and the shaded region is a descriptive confidence interval for that
+    mean. This chart is called by ``run_experiment`` after aggregation.
+    """
     series = (
         ("delivery_ratio_pct", "Message delivery ratio (%)", "#2e7d32"),
         ("network_latency_mean_ms", "Mean network latency (ms)", "#00838f"),
@@ -588,7 +659,14 @@ def _write_seed_sweep_chart(
 def _write_alarm_response_chart(
     output_path: Path, trial_metrics: list[dict[str, object]], runs: int
 ) -> None:
-    """Plot thermal exposure and alarm response delays across seed trials."""
+    """Compare fault-response delays and observed thermal exposure by seed.
+
+    The panels use the per-trial metrics returned by ``run_simulation``:
+    temperature alert delay from excursion start, door alert delay after its
+    30-second limit, and contiguous-sample degree-minutes. Missing detections
+    are omitted from delay histograms and recorded separately in the JSON
+    summary. The fixed LWT estimate is displayed for context, not sampled.
+    """
     series = (
         (
             "temperature_alarm_detection_delay_s",
@@ -652,7 +730,15 @@ def run_sensitivity_analysis(
     drop_rates: tuple[float, ...] = NETWORK_DROP_RATES,
     keepalive_values_s: tuple[int, ...] = MQTT_KEEPALIVE_SCENARIOS_S,
 ) -> dict[str, object]:
-    """Compare packet-loss scenarios and theoretical MQTT LWT keep-alive delays."""
+    """Run packet-loss replications and calculate keep-alive/LWT estimates.
+
+    For each configured drop rate, the function calls ``run_simulation`` for
+    the same sequential seed values with file output disabled, then aggregates
+    delivery, event-window coverage, alarm detection, and response delay.
+    Keep-alive points are calculated from the explicit ``1.5 x keep-alive``
+    assumption rather than measured by a broker. The function writes separate
+    network/LWT JSON reports and charts, and returns both summaries to ``main``.
+    """
     if runs < 1:
         raise ValueError("runs must be at least 1")
     if not drop_rates:
@@ -745,7 +831,14 @@ def run_sensitivity_analysis(
 def _write_network_sensitivity_chart(
     output_path: Path, scenarios: list[dict[str, object]]
 ) -> None:
-    """Plot delivery and alarm-response changes across packet-loss scenarios."""
+    """Plot delivery and alarm-delay means for each packet-loss scenario.
+
+    ``run_sensitivity_analysis`` supplies scenario summaries containing means
+    and approximate confidence intervals. The first two panels show total
+    delivery and delivery during the injected temperature excursion; the
+    final panel compares temperature and door response delays. Error bars
+    describe uncertainty in scenario means, not individual-message latency.
+    """
     drop_rates = [
         float(scenario["network_drop_rate_pct"]) for scenario in scenarios
     ]
@@ -876,7 +969,13 @@ def _write_network_sensitivity_chart(
 def _write_keepalive_sensitivity_chart(
     output_path: Path, scenarios: list[dict[str, object]]
 ) -> None:
-    """Plot estimated LWT detection time as a function of MQTT keep-alive."""
+    """Plot formula-derived LWT delay estimates for configured keep-alives.
+
+    The scenario dictionaries are produced by ``run_sensitivity_analysis``.
+    The curve applies the model's 1.5 multiplier and highlights the project's
+    30-second setting. Saving the figure is the only side effect; it does not
+    start a broker or simulate MQTT packet exchange.
+    """
     keepalives = [int(scenario["mqtt_keepalive_s"]) for scenario in scenarios]
     detection_delays = [
         float(scenario["estimated_lwt_detection_latency_s"])
@@ -909,7 +1008,14 @@ def _write_keepalive_sensitivity_chart(
 
 
 def main() -> None:
-    """Parse command-line options, run the seed sweep, and print its summary."""
+    """Validate CLI options, run requested analyses, and print JSON results.
+
+    Command-line parsing chooses the output directory, seed range, drop rate,
+    and whether sensitivity scenarios are included. Invalid run counts and
+    drop rates are rejected through ``argparse`` before report generation.
+    ``run_experiment`` always runs; ``run_sensitivity_analysis`` runs only
+    when the corresponding flag is set.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-dir",

@@ -13,13 +13,33 @@ The default sketch connects to `broker.hivemq.com:1883` with no TLS or authentic
 
 ## Firmware function map
 
-- `topic`: build the device's topic path.
-- `connectWifi`: join the simulator Wi-Fi network.
-- `connectMqtt`: configure keep-alive and the retained offline will, then publish the retained online status.
-- `publishAlarm`: encode and send a structured alarm event.
-- `publishTelemetry`: read both sensors, track state transitions, and publish the JSON sample.
-- `setup`: initialize the serial console, pin, sensor, Wi-Fi, and MQTT client.
-- `loop`: maintain connectivity and call the telemetry publisher every 10 seconds.
+```mermaid
+flowchart TD
+    Setup["setup() - called once at boot"] --> Wifi["connectWifi()"]
+    Setup --> Mqtt["connectMqtt()"]
+    Mqtt --> TopicStatus["topic(status)"]
+    Loop["loop() - repeated by Arduino"] --> WifiCheck{"Wi-Fi connected?"}
+    WifiCheck -->|no| Wifi
+    Loop --> MqttCheck{"MQTT connected?"}
+    MqttCheck -->|no| Mqtt
+    Loop --> Pump["mqttClient.loop()"]
+    Loop --> Timer{"10-second interval elapsed?"}
+    Timer -->|yes| Telemetry["publishTelemetry()"]
+    Telemetry --> Sensor["Read DHT22 and door pin"]
+    Telemetry -->|state transition or door limit| Alarm["publishAlarm(code, message)"]
+    Alarm --> AlarmTopic["topic(alarms)"]
+    Telemetry --> TelemetryTopic["topic(telemetry)"]
+```
+
+| Function | Inputs and state | Calls, output, or side effects |
+| --- | --- | --- |
+| `topic(suffix)` | Suffix and fixed device ID | Returns `cold-chain/<device_id>/<suffix>`; used by MQTT connection and publish functions. |
+| `connectWifi()` | Simulator Wi-Fi credentials | Starts association and blocks in 250 ms waits until connected; called by `setup()` and `loop()`. |
+| `connectMqtt()` | Wi-Fi-connected MQTT client | Sets broker and 30 s keep-alive, registers retained QoS 1 offline LWT, retries until connected, and publishes retained online status. Called by `setup()` and `loop()`. |
+| `publishAlarm(code, message)` | Alarm identifier and English description | Builds a JSON event and publishes non-retained to `topic("alarms")`; called by `publishTelemetry()`. |
+| `publishTelemetry()` | DHT22 readings, door input, shared alarm state | Rejects invalid sensor reads, evaluates temperature transitions and sampled door duration, then publishes telemetry. Calls `publishAlarm()` and `topic()`. |
+| `setup()` | Arduino boot lifecycle | Initializes serial, door input, DHT22, Wi-Fi, and MQTT in dependency order. |
+| `loop()` | Arduino repeated lifecycle | Recovers connections, services MQTT, and schedules `publishTelemetry()` every 10 seconds. |
 
 See [`../docs/architecture.md`](../docs/architecture.md) for the call graph and MQTT payload contract.
 
