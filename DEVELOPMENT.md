@@ -8,7 +8,7 @@ This file records the design intent and development context needed to continue t
 - **Alarm range and cadence:** temperature compliance is 2-8 C; telemetry is published every 10 seconds; door alarms begin after 30 seconds. Backend door timing is based on telemetry arrival, so detection occurs on the first sample after the threshold rather than at an exact 30-second instant.
 - **Last Will:** the ESP32, not Node-RED, owns its retained QoS 1 `offline` will. The broker's detection interval depends on its keep-alive handling; 1.5 times 30 seconds is an estimate, not a measured guarantee.
 - **Two rule evaluators:** firmware reports local alarms and Node-RED independently evaluates telemetry. Backend alarms are routed directly to the dashboard rather than republished to MQTT, avoiding a publish/subscribe feedback loop. Device-originated alarms remain available on the MQTT alarm topic.
-- **Broker separation:** the Compose stack supplies a loopback-only local Mosquitto broker. The Wokwi sketch defaults to a public HiveMQ broker because a hosted simulator cannot resolve the Compose-only `mosquitto` name. For live integration, configure both clients to use the same reachable broker; keep the public broker limited to non-sensitive demonstrations.
+- **Free end-to-end broker route:** the Compose stack supplies a loopback-only local Mosquitto broker for Node-RED. Wokwi's free Public Gateway cannot reach the local computer, so the ESP32 publishes to HiveMQ and Mosquitto bridges inbound only the unique project topic namespace. Do not expose the local listener or send sensitive data; the public broker and gateway are shared and unencrypted.
 - **Offline model:** the Python simulator intentionally needs no broker, Docker, Wokwi, or hardware. Synthetic network, alarm, and LWT metrics are explicitly labeled as simulated and must not be presented as measurements.
 - **Monte Carlo runs:** `--runs N` evaluates sequential independent seeds `base_seed` through `base_seed + N - 1`. Aggregates include the individual values, mean, sample deviation, and a normal-approximation 95% interval. A single seed cannot estimate an interval.
 - **Operational metrics:** thermal compliance uses only delivered sensor samples. Degree-minutes are integrated over contiguous 10-second received samples; missing intervals are excluded to avoid inventing observations. Alarm-delay distributions separate the injected fault start/threshold from the model's additional sampling and network delay.
@@ -50,6 +50,16 @@ This file records the design intent and development context needed to continue t
 - Added packet-loss scenarios to expose the relationship between modeled delivery loss and alarm behavior.
 - Added a separate theoretical keep-alive/LWT comparison; it is labeled as an estimate rather than an observed broker benchmark.
 - Clarified in report documentation that seed histograms count trials, P95 is not a confidence interval, and missing telemetry does not establish physical thermal compliance.
+
+### Free Wokwi-to-Node-RED integration
+
+- Added a namespace-limited inbound Mosquitto bridge from the free Wokwi/HiveMQ path to the local Node-RED broker.
+- Kept the local Mosquitto listener loopback-only and Node-RED on the Compose network.
+- Assigned a project-specific device ID to reduce accidental collisions on the shared public broker.
+- Saved the public Wokwi project at `https://wokwi.com/projects/481333516199647233`.
+- Verified the HiveMQ-to-local-Mosquitto bridge with a synthetic test message. An earlier Wokwi Public Gateway attempt returned HTTP 503, but later standalone ESP32 tests joined Wi-Fi, obtained IP `10.10.0.2`, and connected by TCP to HiveMQ; the main firmware also connected to MQTT. Its DHT22 reads were invalid, so valid telemetry, dashboard updates, and LWT remain unverified. The earlier 503 was not reproduced and its cause is unknown.
+- Added serial diagnostics for Wi-Fi/MQTT connection attempts and configured Wokwi's documented Wi-Fi channel 6 to skip scanning.
+- Added and ran a separate Wokwi network diagnostic sketch to distinguish virtual Wi-Fi association and outbound TCP reachability from MQTT and sensor behavior.
 
 ## Suggested maintenance workflow
 

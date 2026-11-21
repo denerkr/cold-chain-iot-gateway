@@ -1,12 +1,29 @@
 # Node-RED Flows
 
-`flows.json` contains the Node-RED workspace tab, MQTT broker reference, subscriptions, validation and alarm function nodes, Dashboard gauges/charts/text widgets, and dashboard tab/group. `package.json` installs the legacy `node-red-dashboard` package used by the flow.
+`flows.json` contains the Node-RED workspace tab, MQTT broker reference,
+subscriptions, validation and alarm function nodes, Dashboard gauges/charts/text
+widgets, and dashboard tab/group. The service image is built from `Dockerfile`,
+which installs the pinned legacy `node-red-dashboard` dependency from
+`package.json`. Compose persists Node-RED's user directory and bind-mounts the
+editable flow file separately.
 
 ## Startup and broker configuration
 
-Docker Compose mounts this directory at `/data` and sets `FLOWS=flows.json`. Start the stack with `docker compose up -d`, edit flows at `http://localhost:1880`, and view the dashboard at `http://localhost:1880/ui`.
+Docker Compose stores Node-RED runtime state in a named volume, mounts
+`flows.json` at `/data/flows.json`, and sets `FLOWS=flows.json`. Start or rebuild
+the stack with `docker compose up -d --build`, edit flows at
+`http://localhost:1880`, and view the dashboard at `http://localhost:1880/ui`.
 
-The default broker host is `mosquitto`, which is the Docker Compose service name. It is not reachable directly from Wokwi. For a live hosted-simulator demonstration, edit the MQTT broker configuration in the Node-RED editor so it points to the same broker host and port used by the sketch. Do not use a public demo broker for sensitive data.
+The default broker host is `mosquitto`, which is the Docker Compose service
+name. It is not reachable directly from Wokwi's Public Gateway. Keep this
+setting for the documented free bridge route. A direct-to-HiveMQ alternative
+requires changing the broker node to `broker.hivemq.com:1883`; both routes use
+a shared, unencrypted demonstration broker, so never send sensitive data.
+
+The free integration path now keeps this setting at `mosquitto`: the local
+Mosquitto broker bridges inbound messages from the Wokwi/HiveMQ public-broker
+route. See [`../mosquitto/README.md`](../mosquitto/README.md) for the bridge
+topology and its public-broker limitations.
 
 ## Flow responsibilities
 

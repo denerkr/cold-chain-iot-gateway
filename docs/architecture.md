@@ -9,24 +9,28 @@ sequenceDiagram
     autonumber
     participant Sensor as DHT22 and door switch
     participant Firmware as ESP32 firmware
-    participant Broker as MQTT broker
+    participant PublicBroker as HiveMQ public demo broker
+    participant Bridge as Local Mosquitto bridge
+    participant LocalBroker as Local Mosquitto listener
     participant Flow as Node-RED telemetry flow
     participant AlarmFlow as Node-RED alarm/status flows
     participant UI as Dashboard
 
-    Firmware->>Broker: CONNECT with 30 s keep-alive and retained QoS 1 offline LWT
-    Firmware->>Broker: PUBLISH status = online (retained)
+    Firmware->>PublicBroker: CONNECT with 30 s keep-alive and retained QoS 1 offline LWT
+    Firmware->>PublicBroker: PUBLISH status = online (retained)
     loop Every 10 seconds
         Firmware->>Sensor: Read temperature, humidity, and door state
         Sensor-->>Firmware: Sensor readings
         opt Temperature changes into or out of 2-8 C compliance
-            Firmware->>Broker: PUBLISH alarm event (QoS 0, not retained)
+            Firmware->>PublicBroker: PUBLISH alarm event (QoS 0, not retained)
         end
         opt Door remains open for at least 30 seconds
-            Firmware->>Broker: PUBLISH door alarm (QoS 0, not retained)
+            Firmware->>PublicBroker: PUBLISH door alarm (QoS 0, not retained)
         end
-        Firmware->>Broker: PUBLISH JSON telemetry (QoS 0, not retained)
-        Broker-->>Flow: Deliver cold-chain/+/telemetry
+        Firmware->>PublicBroker: PUBLISH JSON telemetry (QoS 0, not retained)
+        PublicBroker-->>Bridge: Deliver matching project namespace
+        Bridge->>LocalBroker: Forward matching PUBLISH
+        LocalBroker-->>Flow: Deliver cold-chain/+/telemetry
         Flow->>Flow: Parse JSON and validate required fields
         Flow->>Flow: Update per-device alarm and door-duration context
         par Valid telemetry
@@ -37,20 +41,45 @@ sequenceDiagram
             Flow-->>AlarmFlow: Send alarm messages directly to formatter
             AlarmFlow-->>UI: Update latest-event indicator
         end
-        Broker-->>AlarmFlow: Deliver device alarm events as published
+        PublicBroker-->>Bridge: Deliver matching device alarm
+        Bridge->>LocalBroker: Forward alarm PUBLISH
+        LocalBroker-->>AlarmFlow: Deliver device alarm
         AlarmFlow->>AlarmFlow: Parse and validate the event
     end
     opt Subscriber starts or device status changes
-        Broker-->>AlarmFlow: Deliver retained or updated device status
+        PublicBroker-->>Bridge: Deliver retained or updated device status
+        Bridge->>LocalBroker: Forward status PUBLISH
+        LocalBroker-->>AlarmFlow: Deliver retained or updated device status
         AlarmFlow->>AlarmFlow: Validate status topic and payload
         AlarmFlow-->>UI: Update gateway indicator
     end
-    Note over Firmware,Broker: Abrupt disconnect: broker publishes the registered offline LWT
-    Broker-->>AlarmFlow: Deliver retained offline status after keep-alive timeout
+    Note over Firmware,PublicBroker: Abrupt disconnect: HiveMQ publishes the registered offline LWT
+    PublicBroker-->>Bridge: Deliver offline status
+    Bridge->>LocalBroker: Forward retained status PUBLISH
+    LocalBroker-->>AlarmFlow: Deliver offline status
     AlarmFlow-->>UI: Show the gateway as offline
 ```
 
-The local Node-RED MQTT configuration subscribes to the same status, telemetry, and alarm topics. It intentionally does not configure its own birth, close, or will messages on the device's status topic: only the device knows whether that device is online.
+The free end-to-end route is **Wokwi -> HiveMQ -> inbound Mosquitto bridge ->
+local Mosquitto -> Node-RED**. Wokwi's Public Gateway provides outbound
+Internet access but cannot reach local services. The bridge subscribes only to
+`cold-chain/esp32-ccgw-dk-hb/#`; the local Node-RED MQTT configuration
+continues to use `mosquitto:1883` and subscribes to the usual wildcard topics.
+The local broker listener remains loopback-bound on the host. This route uses a
+shared, unencrypted public broker and is only suitable for synthetic, non-secret
+classroom data.
+
+## Observed live verification status
+
+An earlier Wokwi Public Gateway WebSocket attempt (`wss://netwi.wokwi.com/`)
+returned HTTP 503. In later tests, a standalone ESP32 probe associated with
+Wokwi's virtual Wi-Fi, received IP `10.10.0.2`, and opened TCP to HiveMQ on port
+1883. The main firmware also connected to Wi-Fi and MQTT, but repeatedly
+reported invalid DHT22 readings. The 503 was not reproduced, and its cause is
+unknown; the current evidence does not support attributing it solely to a
+persistent gateway outage. The HiveMQ-to-local-Mosquitto bridge separately
+forwarded a synthetic test message. Valid device telemetry, device alarms,
+dashboard updates, and abrupt-disconnect LWT remain unverified end to end.
 
 ## Firmware call graph
 
@@ -60,7 +89,7 @@ flowchart TD
     Setup --> DoorPin["pinMode(DOOR_PIN, INPUT_PULLUP)"]
     Setup --> DHTInit["dht.begin()"]
     Setup --> WiFiConnect["connectWifi()"]
-    WiFiConnect --> WiFiBegin["WiFi.begin() and wait for WL_CONNECTED"]
+    WiFiConnect --> WiFiBegin["WiFi.begin(..., channel 6) and report status"]
     Setup --> MQTTConnect["connectMqtt()"]
     MQTTConnect --> BrokerConfig["setServer() and setKeepAlive(30)"]
     MQTTConnect --> LWT["mqttClient.connect(... status topic, QoS 1, retained offline)"]
@@ -83,8 +112,8 @@ flowchart TD
 | Function | Inputs / state | Side effects and caller |
 | --- | --- | --- |
 | `topic(suffix)` | A topic suffix and the fixed device identifier | Returns a `cold-chain/<device_id>/<suffix>` string to MQTT publishers. |
-| `connectWifi()` | Wi-Fi credentials | Blocks until the simulator's Wi-Fi is connected; called from `setup()` and `loop()`. |
-| `connectMqtt()` | Configured MQTT client and device identifier | Configures keep-alive, connects with a retained QoS 1 offline will, then publishes retained online status. Called at startup and after disconnect. |
+| `connectWifi()` | Wi-Fi credentials | Starts association on Wokwi channel 6, prints progress, and blocks until Wi-Fi is connected; called from `setup()` and `loop()`. |
+| `connectMqtt()` | Configured MQTT client and device identifier | Configures keep-alive, connects with a retained QoS 1 offline will, logs failed retry state, then publishes retained online status. Called at startup and after disconnect. |
 | `publishAlarm(code, message)` | Alarm identifier and English description | Encodes a JSON event and publishes to the non-retained alarm topic at the client's publish QoS. Called by sensor rules. |
 | `publishTelemetry()` | DHT22 values, digital door pin, elapsed uptime | Tracks door-open duration and thermal state, emits any transition alarms, then publishes one JSON sample. |
 | `setup()` | ESP32 startup | Initializes serial, input pin, DHT22, Wi-Fi, and MQTT once. |
@@ -104,7 +133,7 @@ Example firmware telemetry payload:
 
 ```json
 {
-  "device_id": "esp32-cold-chain",
+  "device_id": "esp32-ccgw-dk-hb",
   "temperature_c": 5.0,
   "humidity_pct": 55.0,
   "door_open": false,
@@ -116,7 +145,7 @@ Example device alarm payload:
 
 ```json
 {
-  "device_id": "esp32-cold-chain",
+  "device_id": "esp32-ccgw-dk-hb",
   "code": "temperature_excursion",
   "message": "Temperature outside the 2 to 8 C range"
 }

@@ -8,6 +8,8 @@ An academic distributed-systems prototype for monitoring temperature-sensitive c
 
 > This is a teaching prototype, not a validated cold-chain monitoring or safety system. Simulation metrics are synthetic estimates, not measurements from a physical device or network.
 
+> **Live integration status:** A new Wokwi diagnostic run joined the Public Gateway network, received IP `10.10.0.2`, and opened TCP to HiveMQ on port 1883. The main sketch also connected to HiveMQ over MQTT, but repeatedly reported invalid DHT22 readings, so no valid telemetry was observed. An earlier HTTP 503 was not reproduced in these runs; its cause is not established. The HiveMQ-to-local-Mosquitto bridge was separately verified with a synthetic message. The complete device-to-dashboard, alarm, and LWT path remains unverified.
+
 ## Architecture
 
 ```mermaid
@@ -19,9 +21,11 @@ flowchart LR
         DHT --> ESP32
         Door --> ESP32
     end
-    ESP32 -->|"telemetry, alarms, retained status / LWT"| MQTT["MQTT broker"]
-    MQTT -->|"cold-chain/+/telemetry"| Validate["Node-RED validation and alarm rules"]
-    MQTT -->|"cold-chain/+/alarms and cold-chain/+/status"| Event["Node-RED event and status handlers"]
+    ESP32 -->|"telemetry, alarms, retained status / LWT"| PublicMQTT["HiveMQ public broker"]
+    PublicMQTT -->|"inbound topic bridge"| Bridge["Local Mosquitto bridge"]
+    Bridge --> LocalMQTT["Local Mosquitto broker"]
+    LocalMQTT -->|"cold-chain/+/telemetry"| Validate["Node-RED validation and alarm rules"]
+    LocalMQTT -->|"cold-chain/+/alarms and cold-chain/+/status"| Event["Node-RED event and status handlers"]
     Validate --> Dashboard["Node-RED Dashboard"]
     Event --> Dashboard
     Simulator["Offline multi-seed simulator"] --> Reports["CSV, JSON, PNG reports"]
@@ -29,9 +33,16 @@ flowchart LR
 
 The firmware samples every 10 seconds, uses a 30-second MQTT keep-alive, and publishes temperature, relative humidity, door state, and uptime. The thermal compliance range is 2-8 C. Firmware and Node-RED independently evaluate temperature and door alarms; Node-RED routes its own alarm results directly to the dashboard, while firmware alarm events arrive over MQTT. Node-RED does not republish its locally detected alarms, which avoids MQTT echo loops.
 
+The free end-to-end route uses HiveMQ as the public rendezvous broker: Wokwi
+publishes there, a narrowly scoped **inbound-only** Mosquitto bridge copies this
+project's messages to the local broker, and Node-RED continues to consume the
+local broker. This avoids paying for Wokwi's private gateway and keeps the
+local Mosquitto listener off the Internet. This is a classroom workaround, not
+a secure or production network.
+
 For abrupt loss of the device connection, its MQTT CONNECT packet registers a retained QoS 1 `offline` LWT on `cold-chain/<device_id>/status`. The broker normally detects a missing client after up to 1.5 times the keep-alive interval (45 seconds for this configuration); the actual delay depends on broker and network behavior.
 
-Detailed function call paths, message shapes, design decisions, and per-directory notes are in [`docs/architecture.md`](docs/architecture.md) and each implementation directory's `README.md`. The [`DEVELOPMENT.md`](DEVELOPMENT.md) file preserves the project's design and change history for future maintainers and AI coding assistants.
+Detailed function call paths, message shapes, design decisions, and per-directory notes are in [`docs/architecture.md`](docs/architecture.md) and each implementation directory's `README.md`. The [`docs/defense-preparation.md`](docs/defense-preparation.md) file contains likely presentation questions and evidence-based answers. The [`DEVELOPMENT.md`](DEVELOPMENT.md) file preserves the project's design and change history for future maintainers and AI coding assistants.
 
 ## Install from a clean Windows computer
 
@@ -136,7 +147,7 @@ The [reports guide](reports/README.md) explains each chart and gives a practical
 Start Docker Desktop, then start the services from the project root:
 
 ```powershell
-docker compose up -d
+docker compose up -d --build
 docker compose ps
 ```
 
@@ -152,14 +163,42 @@ The local Mosquitto listener and Node-RED web interface bind to `127.0.0.1`. Ano
 
 ## Run the ESP32 in Wokwi
 
-1. Create an ESP32 project at [Wokwi](https://wokwi.com/projects/new/esp32).
-2. Copy [`wokwi/sketch.ino`](wokwi/sketch.ino) and [`wokwi/diagram.json`](wokwi/diagram.json) into the project.
-3. Add the libraries listed in [`wokwi/libraries.txt`](wokwi/libraries.txt).
-4. Start the simulation. Change DHT22 values to exercise temperature alarms; press `D` to operate the door input.
+1. Open the saved [Cold Chain IoT Gateway Wokwi project](https://wokwi.com/projects/481333516199647233), or create a project at [Wokwi](https://wokwi.com/projects/new/esp32).
+2. If creating a new project, copy [`wokwi/sketch.ino`](wokwi/sketch.ino) and [`wokwi/diagram.json`](wokwi/diagram.json), then add the libraries in [`wokwi/libraries.txt`](wokwi/libraries.txt).
+3. Start the simulation. Change DHT22 values to exercise temperature alarms; press `D` to operate the door input. The Serial Monitor reports Wi-Fi and MQTT connection attempts.
 
-The example firmware uses the public `broker.hivemq.com` broker on port 1883 without TLS or authentication. The local Compose stack uses its own Mosquitto instance and is **not automatically connected** to Wokwi. For a live dashboard demonstration, configure the Node-RED MQTT broker node to use the same accessible broker and port as the firmware, or use a properly secured broker that both clients can reach. The `mosquitto` hostname only resolves inside the Compose network. Never publish sensitive or production data to a public demo broker.
+To isolate the Wokwi Wi-Fi and public-gateway route from MQTT and Node-RED, see [`wokwi/network-diagnostic/README.md`](wokwi/network-diagnostic/README.md).
+
+The example firmware uses the public `broker.hivemq.com` broker on port 1883
+without TLS or authentication. The local Mosquitto bridge subscribes only to
+`cold-chain/esp32-ccgw-dk-hb/#` and forwards those messages to the local
+Node-RED broker. Therefore, leave the Node-RED broker host as `mosquitto`; no
+paid Wokwi feature or broker edit in the Node-RED editor is needed. The public
+broker and Wokwi Public Gateway are shared services and the MQTT traffic is
+unencrypted. Use only the synthetic demonstration data; never send sensitive
+or production data.
+
+## Run the complete free demonstration
+
+1. Start Docker Desktop and run `docker compose up -d` from the repository root.
+2. Check `docker compose ps`; then use `docker compose logs -f mosquitto` to
+   confirm that the `cold-chain-public-demo` bridge connected to HiveMQ.
+3. Open `http://localhost:1880/ui` for the Node-RED dashboard.
+4. Start the Wokwi ESP32 project. Verify that telemetry updates the gauges and
+   charts, and that alarm and status messages reach the dashboard through
+   HiveMQ -> Mosquitto bridge -> local Mosquitto -> Node-RED.
+5. Stop the Wokwi simulation abruptly to exercise the device's LWT. The broker
+   should report `offline`; allow up to about 45 seconds for the configured
+   30-second keep-alive detection estimate.
+
+The public broker is not under the project's control, so this demonstration
+depends on its availability and may be affected by other users. For a
+broker-isolated demonstration, Wokwi's Private IoT Gateway can reach local
+services, but that feature requires a paid Wokwi plan.
 
 The firmware uses `PubSubClient`, which publishes telemetry at QoS 0; a QoS 1 subscription cannot raise the publisher's delivery guarantee.
+
+If Wokwi displays `WiFi Error: Connection to IoT Gateway wss://netwi.wokwi.com/ failed` or a WebSocket HTTP 503, record the simulator output and time, then run the isolated test in [`wokwi/network-diagnostic/README.md`](wokwi/network-diagnostic/README.md). A 503 is evidence that the gateway WebSocket request failed at that time; it does not, by itself, establish a persistent Wokwi outage or rule out other causes. Compare the simulated device's Wi-Fi, TCP, MQTT, and application-level results before attributing the failure. The Public Gateway is a shared service and its availability is not controlled by this project.
 
 ## Suggested presentation outline
 

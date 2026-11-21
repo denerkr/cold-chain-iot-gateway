@@ -9,13 +9,16 @@ services:
     restart: unless-stopped
 
   node-red:
-    image: nodered/node-red:4.0
+    build:
+      context: ./node-red
+    image: cold-chain-node-red:local
     depends_on:
       - mosquitto
     ports:
       - "127.0.0.1:1880:1880"
     volumes:
-      - ./node-red:/data
+      - node-red-data:/data
+      - ./node-red/flows.json:/data/flows.json
     environment:
       - TZ=America/Sao_Paulo
       - FLOWS=flows.json
@@ -23,3 +26,4 @@ services:
 
 volumes:
   mosquitto-data:
+  node-red-data:

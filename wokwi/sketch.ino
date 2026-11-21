@@ -8,7 +8,7 @@ constexpr char WIFI_SSID[] = "Wokwi-GUEST";
 constexpr char WIFI_PASSWORD[] = "";
 constexpr char MQTT_HOST[] = "broker.hivemq.com";
 constexpr uint16_t MQTT_PORT = 1883;
-constexpr char DEVICE_ID[] = "esp32-cold-chain";
+constexpr char DEVICE_ID[] = "esp32-ccgw-dk-hb";
 constexpr uint8_t DHT_PIN = 15;
 constexpr uint8_t DOOR_PIN = 27;
 constexpr uint8_t DHT_TYPE = DHT22;
@@ -38,16 +38,20 @@ String topic(const char *suffix) {
 }
 
 /*
- * Start Wi-Fi association and wait until the simulator reports a connection.
+ * Start Wi-Fi association on Wokwi's channel 6 and wait until the simulator
+ * reports a connection. Serial progress makes a stalled association visible.
  * setup calls this before MQTT initialization, and loop calls it after a
  * later disconnect. This implementation deliberately blocks while retrying
  * every 250 ms; MQTT and sensor work resume only after Wi-Fi is available.
  */
 void connectWifi() {
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to Wi-Fi");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD, 6);
   while (WiFi.status() != WL_CONNECTED) {
+    Serial.print('.');
     delay(250);
   }
+  Serial.printf(" connected, IP: %s\n", WiFi.localIP().toString().c_str());
 }
 
 /*
@@ -69,8 +73,11 @@ void connectMqtt() {
     const bool connected = mqttClient.connect(
         clientId.c_str(), statusTopic.c_str(), 1, true, "offline");
     if (connected) {
+      Serial.println("Connected to MQTT broker");
       mqttClient.publish(statusTopic.c_str(), "online", true);
     } else {
+      Serial.printf("MQTT connection failed (state %d); retrying.\n",
+                    mqttClient.state());
       delay(2000);
     }
   }
