@@ -44,7 +44,9 @@ For abrupt loss of the device connection, its MQTT CONNECT packet registers a re
 
 Detailed function call paths, message shapes, design decisions, and per-directory notes are in [`docs/architecture.md`](docs/architecture.md) and each implementation directory's `README.md`. The [`docs/defense-preparation.md`](docs/defense-preparation.md) file contains likely presentation questions and evidence-based answers. The [`DEVELOPMENT.md`](DEVELOPMENT.md) file preserves the project's design and change history for future maintainers and AI coding assistants.
 
-## Install from a clean Windows computer
+## Installation and Environment Setup
+
+### Windows (PowerShell)
 
 The commands below assume Windows 10/11, PowerShell, and `winget`. Install the three required tools from an elevated or regular PowerShell terminal:
 
@@ -76,20 +78,63 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 ```
 
-Git is needed to clone this repository. Docker Desktop is only required to run the local MQTT broker and Node-RED; the offline simulator only requires Python and its dependencies.
+### Linux (Fedora / Ubuntu / Debian / Arch)
+
+Running the offline simulator on Linux requires only Python 3 (3.10+) and `venv`. Docker is optional and only required if you run the local MQTT broker and Node-RED stack.
+
+#### 1. Install system prerequisites
+
+- **Fedora:**
+  ```bash
+  sudo dnf install -y git python3 python3-pip
+  ```
+- **Ubuntu / Debian:**
+  ```bash
+  sudo apt update && sudo apt install -y git python3 python3-pip python3-venv
+  ```
+- **Arch Linux:**
+  ```bash
+  sudo pacman -S --needed git python python-pip
+  ```
+
+#### 2. Virtual environment setup
+
+From the project root directory:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#### 3. Optional: Docker setup for local Mosquitto & Node-RED
+
+If you plan to run the live MQTT broker and Node-RED dashboard locally on Linux, install Docker CE or Docker Compose. After package installation, enable the Docker daemon and add your user to the `docker` group so you can run Docker without `sudo`:
+
+```bash
+# Enable and start the Docker systemd service
+sudo systemctl enable --now docker
+
+# Add current user to the docker group
+sudo usermod -aG docker $USER
+
+# Apply group changes to your current shell session (or log out and back in)
+newgrp docker
+```
 
 ## Run simulations
 
-Run one deterministic trial (the default) and its tests:
+Once your virtual environment is active (via `source .venv/bin/activate` on Linux or `.\.venv\Scripts\Activate.ps1` on Windows), run one deterministic trial (the default) and its tests:
 
-```powershell
+```bash
 python -m simulation.run_simulation
 python -m unittest discover -s tests -v
 ```
 
 Run multiple independent trials with sequential seeds, for example 100 replications starting at seed 410103:
 
-```powershell
+```bash
 python -m simulation.run_simulation --seed 410103 --runs 100
 ```
 
@@ -97,7 +142,7 @@ python -m simulation.run_simulation --seed 410103 --runs 100
 
 Run the additional packet-loss and MQTT keep-alive analyses with:
 
-```powershell
+```bash
 python -m simulation.run_simulation --seed 410103 --runs 100 --sensitivity-analysis
 ```
 
@@ -105,7 +150,7 @@ The sensitivity run compares message-drop probabilities of 0%, 1%, 5%, and 10%, 
 
 Available options:
 
-```powershell
+```bash
 python -m simulation.run_simulation --help
 python -m simulation.run_simulation --seed 123 --runs 25 --output-dir reports
 python -m simulation.run_simulation --seed 123 --runs 25 --drop-rate 0.05
@@ -144,9 +189,9 @@ The [reports guide](reports/README.md) explains each chart and gives a practical
 
 ## Run the local MQTT broker and Node-RED
 
-Start Docker Desktop, then start the services from the project root:
+Start Docker Desktop (Windows) or the Docker daemon (Linux via `sudo systemctl start docker`), then start the services from the project root:
 
-```powershell
+```bash
 docker compose up -d --build
 docker compose ps
 ```
@@ -155,7 +200,7 @@ Open the Node-RED editor at `http://localhost:1880` and the dashboard at `http:/
 
 Stop the services with:
 
-```powershell
+```bash
 docker compose down
 ```
 
@@ -180,13 +225,11 @@ or production data.
 
 ## Run the complete free demonstration
 
-1. Start Docker Desktop and run `docker compose up -d` from the repository root.
+1. Start Docker Desktop (Windows) or the Docker daemon (Linux via `sudo systemctl start docker`), then run `docker compose up -d` from the repository root.
 2. Check `docker compose ps`; then use `docker compose logs -f mosquitto` to
    confirm that the `cold-chain-public-demo` bridge connected to HiveMQ.
 3. Open `http://localhost:1880/ui` for the Node-RED dashboard.
-4. Start the Wokwi ESP32 project. Verify that telemetry updates the gauges and
-   charts, and that alarm and status messages reach the dashboard through
-   HiveMQ -> Mosquitto bridge -> local Mosquitto -> Node-RED.
+4. Start the Wokwi ESP32 project. Keep the Wokwi browser window visible in the foreground (e.g., side-by-side with Node-RED) to prevent browser background-tab throttling from interrupting the simulated MQTT keep-alive loop. Verify that telemetry updates the gauges and charts, and that alarm and status messages reach the dashboard through HiveMQ -> Mosquitto bridge -> local Mosquitto -> Node-RED.
 5. Stop the Wokwi simulation abruptly to exercise the device's LWT. The broker
    should report `offline`; allow up to about 45 seconds for the configured
    30-second keep-alive detection estimate.
